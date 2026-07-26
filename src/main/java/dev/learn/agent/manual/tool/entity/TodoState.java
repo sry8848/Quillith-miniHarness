@@ -1,4 +1,4 @@
-package dev.learn.agent.manual.tool.tools;
+package dev.learn.agent.manual.tool.entity;
 
 import java.util.List;
 import java.util.Objects;

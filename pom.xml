@@ -25,6 +25,9 @@
 
         <!-- 手写版直接使用 Anthropic Java SDK 调用百炼兼容接口。 -->
         <anthropic-java.version>2.49.0</anthropic-java.version>
+
+        <!-- 统一手写 Agent 的运行期诊断日志版本。 -->
+        <slf4j.version>2.0.18</slf4j.version>
     </properties>
 
     <dependencies>
@@ -32,6 +35,21 @@
             <groupId>com.anthropic</groupId>
             <artifactId>anthropic-java</artifactId>
             <version>${anthropic-java.version}</version>
+        </dependency>
+
+        <!-- 业务代码只依赖日志门面，不绑定具体输出方式。 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+
+        <!-- CLI 运行时使用轻量控制台日志实现。 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
         </dependency>
     </dependencies>
 

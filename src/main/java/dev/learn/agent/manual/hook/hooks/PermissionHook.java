@@ -1,13 +1,16 @@
-package dev.learn.agent.manual.hook;
+package dev.learn.agent.manual.hook.hooks;
 
-import com.anthropic.models.messages.ToolUseBlock;
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.learn.agent.manual.hook.AgentHook;
+import dev.learn.agent.manual.hook.HookEffect;
+import dev.learn.agent.manual.tool.ToolCall;
+import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
+import java.io.IOException;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Scanner;
 
 /**
@@ -40,9 +43,9 @@ public final class PermissionHook implements AgentHook {
     );
 
     /*
-     * Agent 允许操作的工作区根目录。
+     * 与文件工具共享同一套路径解析规则。
      */
-    private final Path workspace;
+    private final WorkspacePathResolver paths;
 
     /*
      * Scanner 由程序入口创建后传入。
@@ -55,24 +58,18 @@ public final class PermissionHook implements AgentHook {
     /**
      * 创建权限 Hook。
      *
-     * @param workspace Agent 允许操作的工作区
-     * @param scanner   用于读取用户审批结果
+     * @param paths   与文件工具共享的路径解析器
+     * @param scanner 用于读取用户审批结果
      */
     public PermissionHook(
-            Path workspace,
+            WorkspacePathResolver paths,
             Scanner scanner
     ) {
-        /*
-         * 转换为绝对路径并消除其中的 . 和 ..，
-         * 方便后面判断目标路径是否仍在工作区内。
-         */
-        this.workspace =
+        this.paths =
                 Objects.requireNonNull(
-                                workspace,
-                                "Workspace 不能为空"
-                        )
-                        .toAbsolutePath()
-                        .normalize();
+                        paths,
+                        "WorkspacePathResolver 不能为空"
+                );
 
         this.scanner =
                 Objects.requireNonNull(
@@ -85,27 +82,23 @@ public final class PermissionHook implements AgentHook {
      * 根据工具名称，把权限检查交给对应的权限规则。
      */
     @Override
-    public Optional<String> beforeToolUse(
-            ToolUseBlock toolUse
+    public HookEffect beforeToolUse(
+            ToolCall toolCall
     ) {
-        /*
-         * 模型生成的工具参数本质上是一段 JSON。
-         */
         JsonNode input =
-                toolUse._input()
-                        .convert(JsonNode.class);
+                toolCall.input();
 
         /*
          * beforeToolUse 只负责分发，
          * 具体规则分别放在对应的权限方法中。
          */
-        return switch (toolUse.name()) {
+        return switch (toolCall.name()) {
             case "bash" ->
                     checkBashPermission(input);
 
             case "write_file", "edit_file" ->
                     checkFileWritePermission(
-                            toolUse,
+                            toolCall,
                             input
                     );
 
@@ -113,14 +106,14 @@ public final class PermissionHook implements AgentHook {
              * read_file、glob 等工具暂时直接允许。
              */
             default ->
-                    Optional.empty();
+                    HookEffect.proceed();
         };
     }
 
     /**
      * 检查 Bash 工具权限。
      */
-    private Optional<String> checkBashPermission(
+    private HookEffect checkBashPermission(
             JsonNode input
     ) {
         JsonNode commandNode =
@@ -132,7 +125,7 @@ public final class PermissionHook implements AgentHook {
          */
         if (commandNode == null
                 || !commandNode.isTextual()) {
-            return Optional.of(
+            return HookEffect.block(
                     "Invalid bash input: command must be a string"
             );
         }
@@ -145,7 +138,7 @@ public final class PermissionHook implements AgentHook {
          */
         for (String pattern : DENY_LIST) {
             if (command.contains(pattern)) {
-                return Optional.of(
+                return HookEffect.block(
                         "Permission denied: '"
                                 + pattern
                                 + "' is on the deny list"
@@ -166,14 +159,14 @@ public final class PermissionHook implements AgentHook {
             }
         }
 
-        return Optional.empty();
+        return HookEffect.proceed();
     }
 
     /**
      * 检查 write_file 和 edit_file 的写入权限。
      */
-    private Optional<String> checkFileWritePermission(
-            ToolUseBlock toolUse,
+    private HookEffect checkFileWritePermission(
+            ToolCall toolCall,
             JsonNode input
     ) {
         JsonNode pathNode =
@@ -184,7 +177,7 @@ public final class PermissionHook implements AgentHook {
          */
         if (pathNode == null
                 || !pathNode.isTextual()) {
-            return Optional.of(
+            return HookEffect.block(
                     "Invalid file input: path must be a string"
             );
         }
@@ -196,31 +189,32 @@ public final class PermissionHook implements AgentHook {
 
         try {
             /*
-             * 相对路径会以 workspace 为起点解析。
-             *
-             * normalize() 会处理路径中的 . 和 ..。
+             * 审批前使用与实际工具完全相同的路径规则。
+             * 工具执行时仍会再次解析，防止审批后路径状态发生变化。
              */
             targetPath =
-                    workspace.resolve(pathText)
-                            .normalize();
-        } catch (InvalidPathException exception) {
-            /*
-             * 例如路径中含有当前操作系统不允许的字符。
-             */
-            return Optional.of(
-                    "Invalid file path: " + pathText
-            );
-        }
+                    switch (toolCall.name()) {
+                        case "write_file" ->
+                                paths.resolveForWrite(
+                                        pathText
+                                );
 
-        /*
-         * startsWith(workspace) 为 false，
-         * 表示目标路径已经逃离工作区。
-         *
-         * 工作区外写入属于硬边界，不允许用户审批放行。
-         */
-        if (!targetPath.startsWith(workspace)) {
-            return Optional.of(
-                    "Permission denied: path escapes workspace"
+                        case "edit_file" ->
+                                paths.resolveExisting(
+                                        pathText
+                                );
+
+                        default ->
+                                throw new IllegalStateException(
+                                        "不支持的文件写入工具："
+                                                + toolCall.name()
+                                );
+                    };
+        } catch (IOException
+                 | InvalidPathException exception) {
+            return HookEffect.block(
+                    "Permission denied: "
+                            + exception.getMessage()
             );
         }
 
@@ -228,8 +222,9 @@ public final class PermissionHook implements AgentHook {
          * 工作区内可以写入，但仍然必须让用户确认。
          */
         return askUser(
-                "工具将修改工作区中的文件",
-                toolUse.name(),
+                "工具将修改工作区中的文件："
+                        + targetPath,
+                toolCall.name(),
                 input
         );
     }
@@ -240,7 +235,7 @@ public final class PermissionHook implements AgentHook {
      * Bash 和文件写入都会复用这段逻辑，
      * 因此现在提取为独立方法。
      */
-    private Optional<String> askUser(
+    private HookEffect askUser(
             String reason,
             String toolName,
             JsonNode input
@@ -266,10 +261,10 @@ public final class PermissionHook implements AgentHook {
          */
         if ("y".equalsIgnoreCase(choice)
                 || "yes".equalsIgnoreCase(choice)) {
-            return Optional.empty();
+            return HookEffect.proceed();
         }
 
-        return Optional.of(
+        return HookEffect.block(
                 "Permission denied by user"
         );
     }

@@ -1,4 +1,4 @@
-package dev.learn.agent.manual.tool.tools;
+package dev.learn.agent.manual.tool.entity;
 
 /**
  * 一项 todo_ 在当前 Agent 任务中的执行状态。

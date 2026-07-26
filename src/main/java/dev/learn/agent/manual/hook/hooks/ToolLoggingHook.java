@@ -1,23 +1,30 @@
-package dev.learn.agent.manual.hook;
+package dev.learn.agent.manual.hook.hooks;
 
-import com.anthropic.models.messages.ToolUseBlock;
-
-import java.util.Optional;
+import dev.learn.agent.manual.hook.AgentHook;
+import dev.learn.agent.manual.hook.HookEffect;
+import dev.learn.agent.manual.tool.ToolCall;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 在工具执行前记录调用信息。
  */
 public final class ToolLoggingHook implements AgentHook {
 
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(
+                    ToolLoggingHook.class
+            );
+
     /**
      * 输出模型准备调用的工具和参数。
      */
     @Override
-    public Optional<String> beforeToolUse(
-            ToolUseBlock toolUse
+    public HookEffect beforeToolUse(
+            ToolCall toolCall
     ) {
         String input =
-                toolUse._input()
+                toolCall.input()
                         .toString();
 
         /*
@@ -32,15 +39,15 @@ public final class ToolLoggingHook implements AgentHook {
                         : input.substring(0, 120)
                           + "...";
 
-        System.out.printf(
-                "[HOOK] 准备调用工具：%s(%s)%n",
-                toolUse.name(),
+        LOGGER.debug(
+                "PreToolUse：{}({})",
+                toolCall.name(),
                 preview
         );
 
         /*
          * 日志 Hook 只负责观察，不阻止工具执行。
          */
-        return Optional.empty();
+        return HookEffect.proceed();
     }
 }

@@ -1,10 +1,9 @@
 package dev.learn.agent.manual.hook;
 
 import com.anthropic.models.messages.MessageParam;
-import com.anthropic.models.messages.ToolUseBlock;
+import dev.learn.agent.manual.tool.ToolCall;
 
 import java.util.List;
-import java.util.Optional;
 
 /**
  * Agent 生命周期的扩展点。
@@ -16,30 +15,50 @@ public interface AgentHook {
     /**
      * 用户消息发送给模型前触发。
      */
-    default void onUserPromptSubmit(String userPrompt) {
+    default HookEffect onUserPromptSubmit(String userPrompt) {
+        return HookEffect.proceed();
+    }
+
+    /**
+     * 每次准备调用模型前触发。
+     *
+     * Hook 只能根据当前消息历史追加上下文，
+     * 不能直接修改消息列表，也不能阻止模型调用。
+     *
+     * @param messages 当前只读消息历史
+     * @return 当前 Hook 需要追加的模型上下文
+     */
+    default HookEffect beforeModelCall(
+            List<MessageParam> messages
+    ) {
+        return HookEffect.proceed();
     }
 
     /**
      * 工具执行前触发。
      *
-     * @return empty 表示允许执行；有值表示拒绝执行，值中保存拒绝原因
+     * @return 当前 Hook 对工具调用产生的结构化效果
      */
-    default Optional<String> beforeToolUse(ToolUseBlock toolUse) {
-        return Optional.empty();
+    default HookEffect beforeToolUse(ToolCall toolCall) {
+        return HookEffect.proceed();
     }
 
     /**
      * 工具执行后触发。
      */
-    default void afterToolUse(ToolUseBlock toolUse, String output) {
+    default HookEffect afterToolUse(
+            ToolCall toolCall,
+            String output
+    ) {
+        return HookEffect.proceed();
     }
 
     /**
      * Agent 准备停止前触发。
      *
-     * @return empty 表示允许停止；有值表示继续执行，值中保存追加给模型的消息
+     * @return CONTINUE 表示允许停止；BLOCK 表示阻止停止并让模型继续
      */
-    default Optional<String> onStop(List<MessageParam> messages) {
-        return Optional.empty();
+    default HookEffect onStop(List<MessageParam> messages) {
+        return HookEffect.proceed();
     }
 }
