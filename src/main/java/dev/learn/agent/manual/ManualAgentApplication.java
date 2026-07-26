@@ -235,8 +235,13 @@ public final class ManualAgentApplication {
                     );
                 }
 
-                agentLoop.run(
-                        history
+                String answer =
+                        agentLoop.run(
+                                history
+                        );
+
+                System.out.println(
+                        "模型：" + answer
                 );
             }
         } finally {

@@ -84,8 +84,9 @@ public final class AgentLoop {
      * 持续调用模型，直到模型不再请求工具。
      *
      * @param messages 可修改的会话消息历史
+     * @return 当前任务最终 assistant 回复中的文本结论
      */
-    public void run(
+    public String run(
             List<MessageParam> messages
     ) {
         while (true) {
@@ -172,19 +173,6 @@ public final class AgentLoop {
                     assistantMessage
             );
 
-            /*
-             * 输出模型回复中的普通文本。
-             */
-            for (ContentBlock block
-                    : response.content()) {
-                if (block.isText()) {
-                    System.out.println(
-                            "模型："
-                                    + block.asText()
-                                    .text()
-                    );
-                }
-            }
 
             /*
              * 不依赖某个特定供应商的 stop_reason 字符串，
@@ -239,7 +227,26 @@ public final class AgentLoop {
                     continue;
                 }
 
-                return;
+                /*
+                 * 只返回最终 assistant 回复中的文本内容。
+                 *
+                 * 子 Agent 后续会把这个字符串作为 task 的工具结果返回，
+                 * 不会把自己的完整消息历史加入父 Agent 上下文。
+                 */
+                return String.join(
+                        "\n",
+                        response.content()
+                                .stream()
+                                .filter(
+                                        ContentBlock::isText
+                                )
+                                .map(
+                                        block -> block
+                                                .asText()
+                                                .text()
+                                )
+                                .toList()
+                );
             }
 
             /*
