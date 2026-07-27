@@ -11,15 +11,11 @@ import dev.learn.agent.manual.hook.hooks.SessionSummaryHook;
 import dev.learn.agent.manual.hook.hooks.TodoReminderHook;
 import dev.learn.agent.manual.hook.hooks.ToolLoggingHook;
 import dev.learn.agent.manual.hook.hooks.WorkspaceLoggingHook;
+import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.tool.ToolRegistry;
+import dev.learn.agent.manual.tool.tools.*;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
-import dev.learn.agent.manual.tool.tools.BashTool;
-import dev.learn.agent.manual.tool.tools.EditFileTool;
-import dev.learn.agent.manual.tool.tools.GlobTool;
-import dev.learn.agent.manual.tool.tools.ReadFileTool;
 import dev.learn.agent.manual.tool.entity.TodoState;
-import dev.learn.agent.manual.tool.tools.TodoWriteTool;
-import dev.learn.agent.manual.tool.tools.WriteFileTool;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -40,6 +36,20 @@ public final class ManualAgentApplication {
 
     private static final String MODEL =
             "qwen3.5-flash";
+
+    /*
+     * 父 Agent 负责完整任务和多次委派，
+     * 因此允许比单个子任务更多的模型调用。
+     */
+    private static final int MAX_PARENT_MODEL_CALLS =
+            100;
+
+    /*
+     * 子 Agent 应处理边界清晰的子任务，
+     * 30 次上限用于阻止委派任务陷入无限工具循环。
+     */
+    private static final int MAX_SUBAGENT_MODEL_CALLS =
+            30;
 
     /**
      * 启动交互式 Coding Agent。
@@ -80,6 +90,19 @@ public final class ManualAgentApplication {
                 );
 
         /*
+         * 技能目录属于 Agent 的启动配置。
+         *
+         * 注册表只在启动时扫描一次，
+         * 使 system prompt 和 load_skill 使用完全相同的技能快照。
+         */
+        SkillRegistry skillRegistry =
+                new SkillRegistry(
+                        workspace.resolve(
+                                "skills"
+                        )
+                );
+
+        /*
          * TodoWriteTool 负责写入状态，
          * TodoReminderHook 负责读取状态。
          *
@@ -88,26 +111,103 @@ public final class ManualAgentApplication {
         TodoState todoState =
                 new TodoState();
 
+
+        /*
+         * 父子 Agent 操作同一个工作区，
+         * 因此共享同一批基础工具实例。
+         *
+         * 这些工具只保存不可变的工作区依赖，
+         * 不保存某个 Agent 的消息历史，可以安全用于当前同步执行模型。
+         */
+        BashTool bashTool =
+                new BashTool(
+                        workspace,
+                        bashExecutable
+                );
+
+        ReadFileTool readFileTool =
+                new ReadFileTool(
+                        paths
+                );
+
+        WriteFileTool writeFileTool =
+                new WriteFileTool(
+                        paths
+                );
+
+        EditFileTool editFileTool =
+                new EditFileTool(
+                        paths
+                );
+
+        GlobTool globTool =
+                new GlobTool(
+                        paths
+                );
+
+        /*
+         * 主 Agent 保留完整的会话规划能力。
+         *
+         * task 工具会在后续步骤中只注册到这个 Registry。
+         */
         ToolRegistry toolRegistry =
                 new ToolRegistry();
 
         toolRegistry.registerAll(
-                new BashTool(
-                        workspace,
-                        bashExecutable
-                ),
-                new ReadFileTool(paths),
-                new WriteFileTool(paths),
-                new EditFileTool(paths),
-                new GlobTool(paths),
+                bashTool,
+                readFileTool,
+                writeFileTool,
+                editFileTool,
+                globTool,
                 new TodoWriteTool(
                         todoState
+                ),
+                new LoadSkillTool(
+                        skillRegistry
                 )
+        );
+
+        /*
+         * 子 Agent 使用独立的工具白名单。
+         *
+         * 不提供 todo_write，避免覆盖主会话规划状态；
+         * 不提供 task，从能力层阻止递归委派。
+         */
+        ToolRegistry subagentToolRegistry =
+                new ToolRegistry();
+
+        subagentToolRegistry.registerAll(
+                bashTool,
+                readFileTool,
+                writeFileTool,
+                editFileTool,
+                globTool
         );
 
         Scanner scanner =
                 new Scanner(System.in);
 
+        /*
+         * 父子 Agent 共用同一个终端和工作区，
+         * 因此共享工具日志、权限检查和大输出处理 Hook。
+         *
+         * s06 当前同步执行，不存在两个 Agent 同时读取 Scanner 的问题。
+         */
+        ToolLoggingHook toolLoggingHook =
+                new ToolLoggingHook();
+
+        PermissionHook permissionHook =
+                new PermissionHook(
+                        paths,
+                        scanner
+                );
+
+        LargeOutputHook largeOutputHook =
+                new LargeOutputHook();
+
+        /*
+         * 父 Agent 拥有完整的主会话 Hook。
+         */
         HookRegistry hookRegistry =
                 new HookRegistry();
 
@@ -115,16 +215,29 @@ public final class ManualAgentApplication {
                 new WorkspaceLoggingHook(
                         workspace
                 ),
-                new ToolLoggingHook(),
-                new PermissionHook(
-                        paths,
-                        scanner
-                ),
-                new LargeOutputHook(),
+                toolLoggingHook,
+                permissionHook,
+                largeOutputHook,
                 new TodoReminderHook(
                         todoState
                 ),
                 new SessionSummaryHook()
+        );
+
+        /*
+         * 子 Agent 仍然经过权限和输出治理，
+         * 但不继承与主会话状态绑定的 Hook。
+         *
+         * 特别是不注册 TodoReminderHook，
+         * 因为子 Agent 没有 todo_write 工具。
+         */
+        HookRegistry subagentHookRegistry =
+                new HookRegistry();
+
+        subagentHookRegistry.registerAll(
+                toolLoggingHook,
+                permissionHook,
+                largeOutputHook
         );
 
         AnthropicClient client =
@@ -133,22 +246,68 @@ public final class ManualAgentApplication {
                         .baseUrl(BASE_URL)
                         .build();
 
-        String systemPrompt =
+        /*
+         * 子 Agent 使用独立系统提示词。
+         *
+         * “不要继续委派”用于指导模型行为；
+         * 真正的递归防护来自 subagentToolRegistry 中不存在 task。
+         */
+        String subagentSystemPrompt =
+                "You are a coding subagent working in "
+                        + workspace
+                        + ". Complete only the delegated task. "
+                        + "Use the available tools when needed. "
+                        + "Return a concise, factual conclusion. "
+                        + "Do not attempt to delegate the task further.";
+
+        AgentLoop subagentLoop =
+                new AgentLoop(
+                        client,
+                        MODEL,
+                        subagentSystemPrompt,
+                        subagentToolRegistry,
+                        subagentHookRegistry,
+                        MAX_SUBAGENT_MODEL_CALLS
+                );
+
+        /*
+         * task 只注册到父 Agent 的工具表。
+         *
+         * 注册必须发生在创建父 AgentLoop 前，
+         * 使父 Agent 的最终能力集合在装配阶段就清楚可见。
+         */
+        toolRegistry.register(
+                new TaskTool(
+                        subagentLoop
+                )
+        );
+
+        String parentSystemPrompt =
                 "You are a coding agent working in "
                         + workspace
                         + ". Before starting any multi-step task, "
                         + "use todo_write to plan your steps. "
                         + "Update todo statuses as you work. "
-                        + "Use the available tools to complete the task.";
+                        + "For complex, self-contained subtasks "
+                        + "that require broad codebase exploration, "
+                        + "use task to delegate the work. "
+                        + "Use the available tools to complete the task."
+                        + "\n\nAvailable skills:\n"
+                        + skillRegistry.catalog()
+                        + "\nWhen an available skill matches the "
+                        + "user's task, call load_skill before "
+                        + "completing the task.";
 
         AgentLoop agentLoop =
                 new AgentLoop(
                         client,
                         MODEL,
-                        systemPrompt,
+                        parentSystemPrompt,
                         toolRegistry,
-                        hookRegistry
+                        hookRegistry,
+                        MAX_PARENT_MODEL_CALLS
                 );
+
 
         /*
          * history 跨多次用户输入保留，
@@ -158,7 +317,7 @@ public final class ManualAgentApplication {
                 new ArrayList<>();
 
         System.out.println(
-                "s05 TodoWrite Agent"
+                "s07 Skill Loading Agent"
         );
 
         System.out.println(
@@ -168,7 +327,7 @@ public final class ManualAgentApplication {
         try {
             while (true) {
                 System.out.println();
-                System.out.print("s05 >> ");
+                System.out.print("s07 >> ");
 
                 if (!scanner.hasNextLine()) {
                     break;

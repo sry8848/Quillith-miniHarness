@@ -26,6 +26,12 @@
         <!-- 手写版直接使用 Anthropic Java SDK 调用百炼兼容接口。 -->
         <anthropic-java.version>2.49.0</anthropic-java.version>
 
+        <!--
+            SKILL.md 的 frontmatter 使用 YAML。
+            与 Anthropic SDK 当前依赖的 Jackson 版本对齐，避免组件版本混用。
+        -->
+        <jackson-yaml.version>2.19.4</jackson-yaml.version>
+
         <!-- 统一手写 Agent 的运行期诊断日志版本。 -->
         <slf4j.version>2.0.18</slf4j.version>
     </properties>
@@ -50,6 +56,16 @@
             <artifactId>slf4j-simple</artifactId>
             <version>${slf4j.version}</version>
             <scope>runtime</scope>
+        </dependency>
+
+        <!--
+            解析 SKILL.md 开头的 YAML frontmatter。
+            jackson-databind 负责对象映射，本模块负责识别 YAML 语法。
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson-yaml.version}</version>
         </dependency>
     </dependencies>
 

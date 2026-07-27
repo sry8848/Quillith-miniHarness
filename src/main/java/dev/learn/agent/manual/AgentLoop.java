@@ -42,12 +42,15 @@ public final class AgentLoop {
 
     private final HookRegistry hookRegistry;
 
+    private final int maxModelCalls;
+
     public AgentLoop(
             AnthropicClient client,
             String model,
             String systemPrompt,
             ToolRegistry toolRegistry,
-            HookRegistry hookRegistry
+            HookRegistry hookRegistry,
+            int maxModelCalls
     ) {
         this.client =
                 Objects.requireNonNull(
@@ -78,6 +81,15 @@ public final class AgentLoop {
                         hookRegistry,
                         "HookRegistry 不能为空"
                 );
+
+        if (maxModelCalls <= 0) {
+            throw new IllegalArgumentException(
+                    "最大模型调用次数必须大于 0"
+            );
+        }
+
+        this.maxModelCalls =
+                maxModelCalls;
     }
 
     /**
@@ -89,7 +101,11 @@ public final class AgentLoop {
     public String run(
             List<MessageParam> messages
     ) {
-        while (true) {
+        for (
+                int modelCallCount = 1;
+                modelCallCount <= maxModelCalls;
+                modelCallCount++
+        ) {
             /*
              * 每次构造模型请求前，先让 Hook 根据当前消息历史
              * 判断是否需要追加动态上下文。
@@ -390,11 +406,19 @@ public final class AgentLoop {
             );
 
             /*
-             * 回到 while 开头。
+             * 回到 for 循环开头。
              *
              * 下一次请求会把工具结果连同完整历史再次发送给模型。
              */
         }
+
+        /*
+         * 执行到这里说明最后一次模型响应仍要求调用工具，
+         * Agent 没有在规定次数内生成最终答案。
+         */
+        return "Error: agent reached the limit of "
+                + maxModelCalls
+                + " model calls without a final answer.";
     }
 
     /**
