@@ -3,6 +3,7 @@ package dev.learn.agent.manual;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.MessageParam;
+import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.hook.hooks.LargeOutputHook;
@@ -11,7 +12,19 @@ import dev.learn.agent.manual.hook.hooks.SessionSummaryHook;
 import dev.learn.agent.manual.hook.hooks.TodoReminderHook;
 import dev.learn.agent.manual.hook.hooks.ToolLoggingHook;
 import dev.learn.agent.manual.hook.hooks.WorkspaceLoggingHook;
+import dev.learn.agent.manual.memory.MemoryConsolidator;
+import dev.learn.agent.manual.memory.MemoryDialogueFormatter;
+import dev.learn.agent.manual.memory.MemoryEntry;
+import dev.learn.agent.manual.memory.MemoryExtractor;
+import dev.learn.agent.manual.memory.MemoryRecallService;
+import dev.learn.agent.manual.memory.MemoryRepository;
+import dev.learn.agent.manual.memory.MemorySelector;
 import dev.learn.agent.manual.skill.SkillRegistry;
+import dev.learn.agent.manual.systemprompt.IdentitySystemPromptProvider;
+import dev.learn.agent.manual.systemprompt.RefreshScope;
+import dev.learn.agent.manual.systemprompt.RuntimeContext;
+import dev.learn.agent.manual.systemprompt.SystemPromptManager;
+import dev.learn.agent.manual.systemprompt.WorkspaceSystemPromptProvider;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.tools.*;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
@@ -39,16 +52,16 @@ public final class ManualAgentApplication {
 
     /*
      * 父 Agent 负责完整任务和多次委派，
-     * 因此允许比单个子任务更多的模型调用。
+     * 因此允许比单个子任务更多的主循环轮次。
      */
-    private static final int MAX_PARENT_MODEL_CALLS =
+    private static final int MAX_PARENT_MODEL_ROUNDS =
             100;
 
     /*
      * 子 Agent 应处理边界清晰的子任务，
-     * 30 次上限用于阻止委派任务陷入无限工具循环。
+     * 30 轮上限用于阻止委派任务陷入无限工具循环。
      */
-    private static final int MAX_SUBAGENT_MODEL_CALLS =
+    private static final int MAX_SUBAGENT_MODEL_ROUNDS =
             30;
 
     /**
@@ -62,6 +75,12 @@ public final class ManualAgentApplication {
         Path workspace =
                 Path.of("")
                         .toRealPath();
+
+        // 保存 System Prompt Provider 当前能够读取的真实程序状态。
+        RuntimeContext runtimeContext =
+                new RuntimeContext(
+                        workspace
+                );
 
         Path bashExecutable =
                 Path.of(
@@ -240,34 +259,104 @@ public final class ManualAgentApplication {
                 largeOutputHook
         );
 
+        /*
+         * 模型请求的瞬态错误由 SDK 统一重试。
+         * 显式限制为两次，避免以后叠加应用层重试造成请求放大。
+         */
         AnthropicClient client =
                 AnthropicOkHttpClient.builder()
                         .apiKey(apiKey)
                         .baseUrl(BASE_URL)
+                        .maxRetries(2)
                         .build();
 
         /*
-         * 子 Agent 使用独立系统提示词。
-         *
-         * “不要继续委派”用于指导模型行为；
-         * 真正的递归防护来自 subagentToolRegistry 中不存在 task。
+         * [核心] 记忆仓库提供候选和正文，Selector 负责相关性判断，
+         * RecallService 将两者组合成本轮可以临时注入的上下文。
          */
-        String subagentSystemPrompt =
-                "You are a coding subagent working in "
-                        + workspace
-                        + ". Complete only the delegated task. "
-                        + "Use the available tools when needed. "
-                        + "Return a concise, factual conclusion. "
-                        + "Do not attempt to delegate the task further.";
+        MemoryRepository memoryRepository =
+                new MemoryRepository(
+                        paths
+                );
+
+        MemorySelector memorySelector =
+                new MemorySelector(
+                        client,
+                        MODEL
+                );
+
+        MemoryRecallService memoryRecallService =
+                new MemoryRecallService(
+                        memoryRepository,
+                        memorySelector
+                );
+
+        /*
+         * [核心] Extractor 在完整用户回合结束后，
+         * 从压缩前对话快照中生成长期记忆候选。
+         *
+         * 它不直接写仓库，保存动作仍由应用层明确编排。
+         */
+        MemoryExtractor memoryExtractor =
+                new MemoryExtractor(
+                        client,
+                        MODEL
+                );
+
+        /*
+         * Consolidator 只在记忆集合发生写入后由应用层触发，
+         * 内部再通过数量阈值判断是否值得调用模型整理。
+         */
+        MemoryConsolidator memoryConsolidator =
+                new MemoryConsolidator(
+                        client,
+                        MODEL,
+                        memoryRepository
+                );
+
+        /*
+         * 父子 Agent 属于同一次应用会话，
+         * 共用管理器可以让上下文产物集中保存在同一个会话目录中。
+         *
+         * ContextManager 不保存某个 Agent 的消息列表，
+         * 所以共享它不会混合父子 Agent 的活跃历史。
+         */
+        ContextManager contextManager =
+                new ContextManager(
+                        client,
+                        MODEL,
+                        paths
+                );
+
+        /*
+         * 子 Agent 只注册自己真实拥有的身份和工作区说明。
+         * 它没有 todo_write、load_skill 和 task，不加载对应能力说明。
+         */
+        SystemPromptManager subagentSystemPromptManager =
+                new SystemPromptManager(
+                        List.of(
+                                IdentitySystemPromptProvider
+                                        .subagent(),
+                                new WorkspaceSystemPromptProvider()
+                        )
+                );
+
+        // [核心] 应用启动时建立子 Agent 的第一份完整 System Prompt。
+        subagentSystemPromptManager.refreshFrom(
+                RefreshScope.APPLICATION,
+                runtimeContext
+        );
 
         AgentLoop subagentLoop =
                 new AgentLoop(
                         client,
                         MODEL,
-                        subagentSystemPrompt,
+                        subagentSystemPromptManager,
+                        runtimeContext,
                         subagentToolRegistry,
                         subagentHookRegistry,
-                        MAX_SUBAGENT_MODEL_CALLS
+                        contextManager,
+                        MAX_SUBAGENT_MODEL_ROUNDS
                 );
 
         /*
@@ -282,30 +371,36 @@ public final class ManualAgentApplication {
                 )
         );
 
-        String parentSystemPrompt =
-                "You are a coding agent working in "
-                        + workspace
-                        + ". Before starting any multi-step task, "
-                        + "use todo_write to plan your steps. "
-                        + "Update todo statuses as you work. "
-                        + "For complex, self-contained subtasks "
-                        + "that require broad codebase exploration, "
-                        + "use task to delegate the work. "
-                        + "Use the available tools to complete the task."
-                        + "\n\nAvailable skills:\n"
-                        + skillRegistry.catalog()
-                        + "\nWhen an available skill matches the "
-                        + "user's task, call load_skill before "
-                        + "completing the task.";
+        /*
+         * 父 Agent 的能力说明分别由身份、工作区和 Skill 模块提供。
+         * Todo 和 Task 的使用说明已经属于各自的 Tool description。
+         */
+        SystemPromptManager parentSystemPromptManager =
+                new SystemPromptManager(
+                        List.of(
+                                IdentitySystemPromptProvider
+                                        .parent(),
+                                new WorkspaceSystemPromptProvider(),
+                                skillRegistry
+                        )
+                );
+
+        // [核心] 应用启动时建立父 Agent 的第一份完整 System Prompt。
+        parentSystemPromptManager.refreshFrom(
+                RefreshScope.APPLICATION,
+                runtimeContext
+        );
 
         AgentLoop agentLoop =
                 new AgentLoop(
                         client,
                         MODEL,
-                        parentSystemPrompt,
+                        parentSystemPromptManager,
+                        runtimeContext,
                         toolRegistry,
                         hookRegistry,
-                        MAX_PARENT_MODEL_CALLS
+                        contextManager,
+                        MAX_PARENT_MODEL_ROUNDS
                 );
 
 
@@ -317,7 +412,7 @@ public final class ManualAgentApplication {
                 new ArrayList<>();
 
         System.out.println(
-                "s07 Skill Loading Agent"
+                "s10 System Prompt Agent"
         );
 
         System.out.println(
@@ -327,7 +422,7 @@ public final class ManualAgentApplication {
         try {
             while (true) {
                 System.out.println();
-                System.out.print("s07 >> ");
+                System.out.print("s10 >> ");
 
                 if (!scanner.hasNextLine()) {
                     break;
@@ -360,6 +455,17 @@ public final class ManualAgentApplication {
 
                     continue;
                 }
+
+                /*
+                 * [核心] 在主 Agent 第一次处理用户问题前召回相关记忆。
+                 *
+                 * 返回内容稍后只进入本轮模型请求，
+                 * 不会作为正式 MessageParam 写入 history。
+                 */
+                String recalledMemories =
+                        memoryRecallService.recall(
+                                query
+                        );
 
                 history.add(
                         MessageParam.builder()
@@ -394,14 +500,92 @@ public final class ManualAgentApplication {
                     );
                 }
 
-                String answer =
-                        agentLoop.run(
+                /*
+                 * [核心] 在 AgentLoop 压缩和替换 history 前，
+                 * 保留本轮记忆提取使用的原始文本视图。
+                 *
+                 * recalledMemories 没有写入 history，
+                 * 因此不会进入这份快照并被重复提取。
+                 */
+                List<MessageParam> memoryExtractionSnapshot =
+                        List.copyOf(
                                 history
                         );
 
+                // [核心] 使用召回结果执行当前主 Agent 回合。
+                String answer =
+                        agentLoop.run(
+                                history,
+                                recalledMemories
+                        );
+
+                /*
+                 * 主回答已经生成，应先展示给用户，
+                 * 再执行不影响回答内容的记忆提取。
+                 */
                 System.out.println(
                         "模型：" + answer
                 );
+
+                // [核心] 把压缩前消息转换为提取器需要的纯文本对话。
+                String extractionDialogue =
+                        MemoryDialogueFormatter.format(
+                                memoryExtractionSnapshot
+                        );
+
+                /*
+                 * [核心] 根据原始对话和已有记忆目录，
+                 * 生成已经通过协议校验的长期记忆候选。
+                 */
+                List<MemoryEntry> extractedMemories =
+                        memoryExtractor.extract(
+                                extractionDialogue,
+                                memoryRepository.list()
+                        );
+
+                /*
+                 * [核心] 逐条发布候选，并在每次保存后重建索引。
+                 *
+                 * 当前没有批次事务；中途失败可能只保存前半批，
+                 * 该可靠性缺口已经记录在 s09 待办中。
+                 */
+                for (
+                        MemoryEntry entry
+                        : extractedMemories
+                ) {
+                    memoryRepository.save(
+                            entry
+                    );
+                }
+
+                // 保存成功时显示本轮实际产生的记忆数量。
+                if (!extractedMemories.isEmpty()) {
+                    System.out.println(
+                            "[Memory：已保存 "
+                                    + extractedMemories.size()
+                                    + " 条记忆]"
+                    );
+
+                    /*
+                     * [核心] 只有本轮实际写入了记忆，才检查是否需要整理。
+                     *
+                     * [边界：目录没有变化却在每轮按数量触发 →
+                     * 稳定的十条有效记忆会导致重复模型调用和持续成本]
+                     */
+                    List<MemoryEntry> consolidatedMemories =
+                            memoryConsolidator
+                                    .consolidateIfNeeded();
+
+                    // 整理器返回空列表表示当前尚未达到数量阈值。
+                    if (!consolidatedMemories.isEmpty()) {
+                        System.out.println(
+                                "[Memory：整理后保留 "
+                                        + consolidatedMemories.size()
+                                        + " 条记忆]"
+                        );
+                    }
+                }
+
             }
         } finally {
             client.close();

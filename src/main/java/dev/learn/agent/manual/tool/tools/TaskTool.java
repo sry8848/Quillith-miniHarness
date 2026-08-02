@@ -24,10 +24,9 @@ public final class TaskTool implements AgentTool {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "task",
-                    "Launch a subagent to handle a self-contained "
-                            + "complex subtask. The subagent uses an "
-                            + "isolated conversation and returns only "
-                            + "its final conclusion.",
+                    "将需要广泛探索代码库的复杂、边界清晰且可独立完成的"
+                            + "子任务委派给隔离的子智能体；"
+                            + "子智能体只返回最终结论。",
                     Map.of(
                             "description",
                             ToolDefinitionFactory.stringProperty(
@@ -132,7 +131,8 @@ public final class TaskTool implements AgentTool {
          */
         String conclusion =
                 subagentLoop.run(
-                        subagentMessages
+                        subagentMessages,
+                        ""
                 );
 
         System.out.println(

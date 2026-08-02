@@ -25,7 +25,8 @@ public final class TodoWriteTool implements AgentTool {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "todo_write",
-                    "Replace the current todo list for a multi-step task.",
+                    "开始多步骤任务前，使用此工具创建计划；"
+                            + "执行过程中再次调用以更新各任务状态。",
                     Map.of(
                             "todos",
                             JsonValue.from(

@@ -1,5 +1,9 @@
 package dev.learn.agent.manual.skill;
 
+import dev.learn.agent.manual.systemprompt.RefreshScope;
+import dev.learn.agent.manual.systemprompt.RuntimeContext;
+import dev.learn.agent.manual.systemprompt.SystemPromptProvider;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,7 +22,8 @@ import java.util.stream.Stream;
  * 注册表以技能名称为唯一键，并保持目录扫描后的稳定顺序。
  * 创建完成后不再修改，保证同一次 Agent 会话看到的技能集合不变。
  */
-public final class SkillRegistry {
+public final class SkillRegistry
+        implements SystemPromptProvider {
 
     private final Path skillsDirectory;
 
@@ -100,6 +105,47 @@ public final class SkillRegistry {
                                 loadedSkills
                         )
                 );
+    }
+
+    /**
+     * 返回 Skill section 的稳定 id。
+     */
+    @Override
+    public String id() {
+        return "skills";
+    }
+
+    /**
+     * 当前 SkillRegistry 只在应用启动时扫描一次。
+     */
+    @Override
+    public RefreshScope scope() {
+        return RefreshScope.APPLICATION;
+    }
+
+    /**
+     * Skill 说明排列在基础环境说明之后。
+     */
+    @Override
+    public int order() {
+        return 300;
+    }
+
+    /**
+     * 返回轻量 Skill 目录和按需加载规则。
+     */
+    @Override
+    public Optional<String> load(
+            RuntimeContext runtimeContext
+    ) {
+        // Skill catalog 是模型选择是否调用 load_skill 的第一层索引。
+        return Optional.of(
+                "当前可用技能：\n"
+                        + catalog()
+                        + "\n当某个技能与用户任务匹配时，必须首先调用 "
+                        + "load_skill 加载完整指令；在此之前不要调用 "
+                        + "todo_write、其他工具或输出文本。"
+        );
     }
 
     /**

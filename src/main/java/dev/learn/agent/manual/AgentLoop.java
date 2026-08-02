@@ -1,6 +1,7 @@
 package dev.learn.agent.manual;
 
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.errors.BadRequestException;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
@@ -8,8 +9,13 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.MessageParam;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUseBlock;
+import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
+import dev.learn.agent.manual.systemprompt.RefreshScope;
+import dev.learn.agent.manual.systemprompt.RuntimeContext;
+import dev.learn.agent.manual.systemprompt.SystemPrompt;
+import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.ToolCall;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import org.slf4j.Logger;
@@ -17,6 +23,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -36,21 +43,36 @@ public final class AgentLoop {
 
     private final String model;
 
-    private final String systemPrompt;
+    // 保存动态 System Prompt 的刷新入口和当前真实运行状态。
+    private final SystemPromptManager systemPromptManager;
+
+    private final RuntimeContext runtimeContext;
 
     private final ToolRegistry toolRegistry;
 
     private final HookRegistry hookRegistry;
 
-    private final int maxModelCalls;
+    /*
+     * 四层上下文管线共用同一个管理器，
+     * 保证工具结果文件、会话摘要和压缩策略属于同一次应用会话。
+     */
+    private final ContextManager contextManager;
+
+    /*
+     * 该上限约束 Agent 主循环轮次，不统计摘要请求和恢复重试。
+     * 它用于阻止模型持续请求工具，而不是作为 API 计费上限。
+     */
+    private final int maxModelRounds;
 
     public AgentLoop(
             AnthropicClient client,
             String model,
-            String systemPrompt,
+            SystemPromptManager systemPromptManager,
+            RuntimeContext runtimeContext,
             ToolRegistry toolRegistry,
             HookRegistry hookRegistry,
-            int maxModelCalls
+            ContextManager contextManager,
+            int maxModelRounds
     ) {
         this.client =
                 Objects.requireNonNull(
@@ -64,10 +86,16 @@ public final class AgentLoop {
                         "Model 不能为空"
                 );
 
-        this.systemPrompt =
+        this.systemPromptManager =
                 Objects.requireNonNull(
-                        systemPrompt,
-                        "SystemPrompt 不能为空"
+                        systemPromptManager,
+                        "SystemPromptManager 不能为空"
+                );
+
+        this.runtimeContext =
+                Objects.requireNonNull(
+                        runtimeContext,
+                        "RuntimeContext 不能为空"
                 );
 
         this.toolRegistry =
@@ -82,29 +110,57 @@ public final class AgentLoop {
                         "HookRegistry 不能为空"
                 );
 
-        if (maxModelCalls <= 0) {
+        // 保存 AgentLoop 执行四层上下文治理时使用的统一入口。
+        this.contextManager =
+                Objects.requireNonNull(
+                        contextManager,
+                        "ContextManager 不能为空"
+                );
+
+        if (maxModelRounds <= 0) {
             throw new IllegalArgumentException(
-                    "最大模型调用次数必须大于 0"
+                    "最大模型循环轮次必须大于 0"
             );
         }
 
-        this.maxModelCalls =
-                maxModelCalls;
+        // 保存主循环的终止边界，防止工具调用无限延续。
+        this.maxModelRounds =
+                maxModelRounds;
     }
 
     /**
      * 持续调用模型，直到模型不再请求工具。
      *
      * @param messages 可修改的会话消息历史
+     * @param turnContext 只进入本轮模型请求、不写入会话历史的临时上下文
      * @return 当前任务最终 assistant 回复中的文本结论
      */
     public String run(
-            List<MessageParam> messages
+            List<MessageParam> messages,
+            String turnContext
     ) {
+        /*
+         * [边界：调用方漏传本轮上下文 → 无法区分“没有召回记忆”
+         * 与“集成代码遗漏参数”，导致请求行为依赖空指针位置]
+         */
+        Objects.requireNonNull(
+                turnContext,
+                "turnContext 不能为 null"
+        );
+
+        /*
+         * [核心] 一次 run 对应一个新的用户回合或子任务，
+         * 因此先刷新 TURN 以及更短生命周期的 Prompt Item。
+         */
+        systemPromptManager.refreshFrom(
+                RefreshScope.TURN,
+                runtimeContext
+        );
+
         for (
-                int modelCallCount = 1;
-                modelCallCount <= maxModelCalls;
-                modelCallCount++
+                int modelRoundCount = 1;
+                modelRoundCount <= maxModelRounds;
+                modelRoundCount++
         ) {
             /*
              * 每次构造模型请求前，先让 Hook 根据当前消息历史
@@ -149,15 +205,110 @@ public final class AgentLoop {
             }
 
             /*
-             * 把完整消息历史和工具定义发送给模型。
+             * L1 先按消息数量裁掉中间旧历史，
+             * 同时保护会话目标、最近消息和工具协议边界。
              */
-            Message response =
-                    client.messages()
-                            .create(
-                                    createRequest(
-                                            messages
-                                    )
-                            );
+            List<MessageParam> requestMessages =
+                    contextManager.snipMiddle(
+                            messages
+                    );
+
+            /*
+             * L2 再替换较旧的大型工具结果。
+             *
+             * L1 先缩小需要扫描的消息范围；
+             * L2 只处理仍留在活跃上下文中的旧工具结果。
+             */
+            requestMessages =
+                    contextManager.compactOldToolResults(
+                            requestMessages
+                    );
+
+            /*
+             * L4 只在两层本地压缩仍不足时调用模型生成摘要。
+             *
+             * 先执行零 API 成本的压缩，可以避免每轮都为摘要
+             * 增加延迟和模型调用费用。
+             */
+            if (contextManager.shouldAutoCompact(
+                    requestMessages
+            )) {
+                requestMessages =
+                        contextManager.compactHistory(
+                                requestMessages,
+                                ""
+                        );
+            }
+
+            /*
+             * ContextManager 返回新列表，不会直接修改调用方历史。
+             * 所有请求前管线成功后再统一替换，避免只提交半条管线的结果。
+             */
+            messages.clear();
+
+            messages.addAll(
+                    requestMessages
+            );
+
+            /*
+             * 主模型调用单独包围在错误恢复边界内。
+             * 摘要模型失败不应被误判成主请求上下文超限。
+             */
+            Message response;
+
+            try {
+                // 第一次发送经过正常管线处理的活跃历史。
+                response =
+                        client.messages()
+                                .create(
+                                        createRequest(
+                                                messages,
+                                                turnContext
+                                        )
+                                );
+            } catch (BadRequestException exception) {
+                /*
+                 * 普通 400 可能是参数、模型或协议错误，
+                 * 只有已确认的上下文超限错误才允许改变历史并重试。
+                 */
+                if (!isPromptTooLong(
+                        exception
+                )) {
+                    throw exception;
+                }
+
+                /*
+                 * 恢复压缩摘要较旧轮次，并原样保留最新 API 轮次，
+                 * 使下一次请求仍在处理同一项尚未完成的工作。
+                 */
+                List<MessageParam> recoveredMessages =
+                        contextManager.recoverFromPromptTooLong(
+                                messages
+                        );
+
+                // 恢复成功后才用新历史替换被服务端拒绝的历史。
+                messages.clear();
+
+                messages.addAll(
+                        recoveredMessages
+                );
+
+                /*
+                 * 第二次调用直接重试同一个主模型请求，
+                 * 不回到循环开头重复触发 BeforeModelCall Hook。
+                 *
+                 * 该调用不再放进新的 catch，因此连续超限会直接抛出，
+                 * 不会形成“压缩—重试—再压缩”的无限循环。
+                 */
+                response =
+                        client.messages()
+                                .create(
+                                        createRequest(
+                                                messages,
+                                                turnContext
+                                        )
+                                );
+            }
 
             MessageParam assistantMessage =
                     MessageParam.builder()
@@ -183,7 +334,8 @@ public final class AgentLoop {
                             .build();
 
             /*
-             * 模型回复中的普通文本，
+             * 把模型返回的完整 assistant 消息加入活跃历史，
+             * 其中可能同时包含文本和一个或多个 tool_use。
              */
             messages.add(
                     assistantMessage
@@ -386,6 +538,17 @@ public final class AgentLoop {
             }
 
             /*
+             * L3 在工具结果进入长期历史前限制本轮输出总量。
+             *
+             * 此时 Hook 已经完成输出修改，预算计算看到的是
+             * 真正准备交给模型的最终结果。
+             */
+            List<ContentBlockParam> limitedToolResults =
+                    contextManager.applyToolResultBudget(
+                            toolResults
+                    );
+
+            /*
              * Anthropic 协议要求：
              *
              * assistant 发出 tool_use，
@@ -397,7 +560,7 @@ public final class AgentLoop {
                                     MessageParam.Role.USER
                             )
                             .contentOfBlockParams(
-                                    toolResults
+                                    limitedToolResults
                             )
                             .build();
 
@@ -417,25 +580,98 @@ public final class AgentLoop {
          * Agent 没有在规定次数内生成最终答案。
          */
         return "Error: agent reached the limit of "
-                + maxModelCalls
-                + " model calls without a final answer.";
+                + maxModelRounds
+                + " model rounds without a final answer.";
+    }
+
+    /**
+     * 判断百炼或 Anthropic 是否因输入上下文过长拒绝主请求。
+     *
+     * 当前应用固定使用百炼的 Anthropic 兼容端点，
+     * 因此这里只识别两个已经确认的错误文本，
+     * 不把所有 BadRequestException 都当成可恢复错误。
+     *
+     * @param exception Anthropic Java SDK 返回的 HTTP 400 异常
+     * @return 错误内容明确表示输入上下文超限时返回 true
+     */
+    private static boolean isPromptTooLong(
+            BadRequestException exception
+    ) {
+        /*
+         * SDK 的异常消息包含序列化后的服务端响应体。
+         * ROOT 区域规则保证大小写转换不受运行机器语言环境影响。
+         */
+        String errorMessage =
+                exception.getMessage()
+                        .toLowerCase(
+                                Locale.ROOT
+                        );
+
+        /*
+         * Anthropic 使用 “prompt is too long”，
+         * 百炼使用 “Range of input length should be [1, ...]”。
+         */
+        return errorMessage.contains(
+                "prompt is too long"
+        )
+                || errorMessage.contains(
+                "range of input length should be [1,"
+        );
     }
 
     /**
      * 构造一次模型请求。
      *
-     * 这是模型 API 边界，因此单独成为方法。
+     * turnContext 只追加到即将发送的请求对象，
+     * 不会写入调用方持有的 messages。
+     *
+     * @param messages 当前真实会话历史
+     * @param turnContext 本轮临时上下文；空字符串表示没有
+     * @return 可以直接发送给模型的请求
      */
     private MessageCreateParams createRequest(
-            List<MessageParam> messages
+            List<MessageParam> messages,
+            String turnContext
     ) {
-        return MessageCreateParams.builder()
-                .model(model)//设置当前使用的模型名称。
-                .maxTokens(MAX_TOKENS)//限制模型一次回复最多生成多少 Token。
-                .system(systemPrompt)//设置 Agent 的系统提示词。
-                .messages(messages)//发送当前完整会话历史。
-                .tools(toolRegistry.definitions())//告诉模型当前可以调用哪些工具。
-                .build();//完成请求对象构造。
+        /*
+         * [核心] 每次真正构造 Anthropic 请求前刷新 MODEL_CALL Item。
+         * 普通调用和上下文超限后的恢复重试都会经过这里。
+         */
+        SystemPrompt systemPrompt =
+                systemPromptManager.refreshFrom(
+                        RefreshScope.MODEL_CALL,
+                        runtimeContext
+                );
+
+        // [核心] 使用最新完整 System Prompt、真实历史和工具定义构造请求。
+        MessageCreateParams.Builder request =
+                MessageCreateParams.builder()
+                        .model(model)
+                        .maxTokens(MAX_TOKENS)
+                        .system(
+                                systemPrompt.content()
+                        )
+                        .messages(messages)
+                        .tools(
+                                toolRegistry.definitions()
+                        );
+
+        /*
+         * [核心] 有召回内容时，只把它追加到本次 API 请求。
+         *
+         * 不执行 messages.add()，避免记忆内容进入压缩、
+         * 后续会话历史和回合结束后的记忆提取。
+         */
+        if (!turnContext.isBlank()) {
+            request.addUserMessage(
+                    "<system-reminder>\n"
+                            + turnContext
+                            + "\n</system-reminder>"
+            );
+        }
+
+        // 完成不再修改的模型请求。
+        return request.build();
     }
 
 }
