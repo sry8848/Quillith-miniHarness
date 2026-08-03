@@ -4,6 +4,7 @@ import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
 import java.io.IOException;
@@ -56,7 +57,7 @@ public final class GlobTool implements AgentTool {
     }
 
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode patternNode =
@@ -65,7 +66,9 @@ public final class GlobTool implements AgentTool {
         if (patternNode == null
                 || !patternNode.isTextual()
                 || patternNode.textValue().isBlank()) {
-            return "Error: pattern must be a non-blank string";
+            return ToolExecutionResult.failure(
+                    "Error: pattern must be a non-blank string"
+            );
         }
 
         String pattern =
@@ -80,8 +83,10 @@ public final class GlobTool implements AgentTool {
                                     "glob:" + pattern
                             );
         } catch (IllegalArgumentException exception) {
-            return "Error: invalid glob pattern: "
-                    + exception.getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: invalid glob pattern: "
+                            + exception.getMessage()
+            );
         }
 
         Path workspace =
@@ -115,7 +120,9 @@ public final class GlobTool implements AgentTool {
                             .toList();
 
             if (matches.isEmpty()) {
-                return "(no matches)";
+                return ToolExecutionResult.success(
+                        "(no matches)"
+                );
             }
 
             boolean truncated =
@@ -137,14 +144,18 @@ public final class GlobTool implements AgentTool {
                             visibleMatches
                     );
 
-            return truncated
-                    ? output
-                            + System.lineSeparator()
-                            + "... results truncated"
-                    : output;
+            return ToolExecutionResult.success(
+                    truncated
+                            ? output
+                                    + System.lineSeparator()
+                                    + "... results truncated"
+                            : output
+            );
         } catch (IOException
                  | UncheckedIOException exception) {
-            return "Error: " + exception.getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: " + exception.getMessage()
+            );
         }
     }
 }

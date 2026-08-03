@@ -4,6 +4,7 @@ import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -112,7 +113,7 @@ public final class BashTool implements AgentTool {
      * 执行模型生成的 Bash 命令。
      */
     @Override
-    public String execute(JsonNode input) {
+    public ToolExecutionResult execute(JsonNode input) {
         JsonNode commandNode =
                 input.get("command");
 
@@ -122,7 +123,9 @@ public final class BashTool implements AgentTool {
          */
         if (commandNode == null
                 || !commandNode.isTextual()) {
-            return "Error: command must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: command must be a string"
+            );
         }
 
         String command =
@@ -184,9 +187,11 @@ public final class BashTool implements AgentTool {
                     process.destroyForcibly();
                     process.waitFor();
 
-                    return "Error: command timed out after "
-                            + TIMEOUT_SECONDS
-                            + " seconds";
+                    return ToolExecutionResult.failure(
+                            "Error: command timed out after "
+                                    + TIMEOUT_SECONDS
+                                    + " seconds"
+                    );
                 }
 
                 CapturedOutput captured =
@@ -205,14 +210,34 @@ public final class BashTool implements AgentTool {
                             "\n... output truncated";
                 }
 
-                return "Exit code: "
-                        + process.exitValue()
-                        + "\n"
-                        + output;
+                // 读取命令真实退出码，不能用“进程已结束”代替成功判断。
+                int exitCode =
+                        process.exitValue();
+
+                // 成功和失败共享同一份可诊断输出格式。
+                String result =
+                        "Exit code: "
+                                + exitCode
+                                + "\n"
+                                + output;
+
+                /*
+                 * Shell 进程正常结束不代表命令成功，
+                 * 非零退出码必须作为失败状态交给模型。
+                 */
+                return exitCode == 0
+                        ? ToolExecutionResult.success(
+                                result
+                        )
+                        : ToolExecutionResult.failure(
+                                result
+                        );
             }
         } catch (IOException exception) {
-            return "Error: failed to start Bash: "
-                    + exception.getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: failed to start Bash: "
+                            + exception.getMessage()
+            );
         } catch (InterruptedException exception) {
             /*
              * 恢复线程的中断标记，
@@ -221,11 +246,15 @@ public final class BashTool implements AgentTool {
             Thread.currentThread()
                     .interrupt();
 
-            return "Error: Bash execution interrupted";
+            return ToolExecutionResult.failure(
+                    "Error: Bash execution interrupted"
+            );
         } catch (ExecutionException exception) {
-            return "Error: failed to read Bash output: "
-                    + exception.getCause()
-                    .getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: failed to read Bash output: "
+                            + exception.getCause()
+                            .getMessage()
+            );
         }
     }
 

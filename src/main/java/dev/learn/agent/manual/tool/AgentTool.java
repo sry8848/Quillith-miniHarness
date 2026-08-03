@@ -20,7 +20,7 @@ public interface AgentTool {
      * 执行模型请求的工具操作。
      *
      * @param input 模型生成的 JSON 参数
-     * @return 返回给模型的工具执行结果
+     * @return 包含输出内容和失败状态的工具执行结果
      */
-    String execute(JsonNode input);
+    ToolExecutionResult execute(JsonNode input);
 }

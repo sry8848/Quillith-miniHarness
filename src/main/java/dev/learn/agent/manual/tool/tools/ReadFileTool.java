@@ -4,6 +4,7 @@ import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
 import java.io.BufferedReader;
@@ -55,7 +56,7 @@ public final class ReadFileTool implements AgentTool {
     }
 
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode pathNode =
@@ -63,7 +64,9 @@ public final class ReadFileTool implements AgentTool {
 
         if (pathNode == null
                 || !pathNode.isTextual()) {
-            return "Error: path must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: path must be a string"
+            );
         }
 
         Integer limit = null;
@@ -74,7 +77,9 @@ public final class ReadFileTool implements AgentTool {
             if (!limitNode.isIntegralNumber()
                     || !limitNode.canConvertToInt()
                     || limitNode.intValue() <= 0) {
-                return "Error: limit must be a positive integer";
+                return ToolExecutionResult.failure(
+                        "Error: limit must be a positive integer"
+                );
             }
 
             limit =
@@ -88,15 +93,21 @@ public final class ReadFileTool implements AgentTool {
                     );
 
             if (!Files.isRegularFile(file)) {
-                return "Error: path is not a regular file";
+                return ToolExecutionResult.failure(
+                        "Error: path is not a regular file"
+                );
             }
 
-            return readLines(
-                    file,
-                    limit
+            return ToolExecutionResult.success(
+                    readLines(
+                            file,
+                            limit
+                    )
             );
         } catch (IOException exception) {
-            return "Error: " + exception.getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: " + exception.getMessage()
+            );
         }
     }
 

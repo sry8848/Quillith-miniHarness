@@ -5,6 +5,7 @@ import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.tool.entity.TodoItem;
 import dev.learn.agent.manual.tool.entity.TodoState;
 import dev.learn.agent.manual.tool.entity.TodoStatus;
@@ -106,7 +107,7 @@ public final class TodoWriteTool implements AgentTool {
      * @return 返回给模型的执行结果
      */
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode todosNode =
@@ -114,7 +115,9 @@ public final class TodoWriteTool implements AgentTool {
 
         if (todosNode == null
                 || !todosNode.isArray()) {
-            return "Error: todos must be an array";
+            return ToolExecutionResult.failure(
+                    "Error: todos must be an array"
+            );
         }
 
         List<TodoItem> updatedTodos =
@@ -127,9 +130,11 @@ public final class TodoWriteTool implements AgentTool {
                     todosNode.get(index);
 
             if (!todoNode.isObject()) {
-                return "Error: todos["
-                        + index
-                        + "] must be an object";
+                return ToolExecutionResult.failure(
+                        "Error: todos["
+                                + index
+                                + "] must be an object"
+                );
             }
 
             JsonNode contentNode =
@@ -139,9 +144,11 @@ public final class TodoWriteTool implements AgentTool {
                     || !contentNode.isTextual()
                     || contentNode.textValue()
                     .isBlank()) {
-                return "Error: todos["
-                        + index
-                        + "].content must be a non-blank string";
+                return ToolExecutionResult.failure(
+                        "Error: todos["
+                                + index
+                                + "].content must be a non-blank string"
+                );
             }
 
             JsonNode statusNode =
@@ -149,9 +156,11 @@ public final class TodoWriteTool implements AgentTool {
 
             if (statusNode == null
                     || !statusNode.isTextual()) {
-                return "Error: todos["
-                        + index
-                        + "].status must be a string";
+                return ToolExecutionResult.failure(
+                        "Error: todos["
+                                + index
+                                + "].status must be a string"
+                );
             }
 
             TodoStatus status =
@@ -166,9 +175,11 @@ public final class TodoWriteTool implements AgentTool {
                     };
 
             if (status == null) {
-                return "Error: todos["
-                        + index
-                        + "].status is invalid";
+                return ToolExecutionResult.failure(
+                        "Error: todos["
+                                + index
+                                + "].status is invalid"
+                );
             }
 
             updatedTodos.add(
@@ -190,9 +201,11 @@ public final class TodoWriteTool implements AgentTool {
                 currentTodos
         );
 
-        return "Updated "
-                + currentTodos.size()
-                + " tasks";
+        return ToolExecutionResult.success(
+                "Updated "
+                        + currentTodos.size()
+                        + " tasks"
+        );
     }
 
     /**

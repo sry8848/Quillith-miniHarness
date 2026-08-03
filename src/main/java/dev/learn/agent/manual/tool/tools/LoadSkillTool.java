@@ -6,6 +6,7 @@ import dev.learn.agent.manual.skill.SkillDefinition;
 import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 
 import java.util.List;
 import java.util.Map;
@@ -70,10 +71,10 @@ public final class LoadSkillTool implements AgentTool {
      * 按精确名称返回技能说明。
      *
      * @param input 模型生成的工具参数
-     * @return 完整技能说明，或者可供模型纠正的明确错误
+     * @return 包含完整技能说明或明确错误的工具执行结果
      */
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode nameNode =
@@ -88,8 +89,10 @@ public final class LoadSkillTool implements AgentTool {
                 || !nameNode.isTextual()
                 || nameNode.textValue()
                 .isBlank()) {
-            return "Error: name must be "
-                    + "a non-blank string";
+            return ToolExecutionResult.failure(
+                    "Error: name must be "
+                            + "a non-blank string"
+            );
         }
 
         String name =
@@ -107,8 +110,10 @@ public final class LoadSkillTool implements AgentTool {
                 );
 
         if (result.isEmpty()) {
-            return "Error: unknown skill: "
-                    + name;
+            return ToolExecutionResult.failure(
+                    "Error: unknown skill: "
+                            + name
+            );
         }
 
         SkillDefinition skill =
@@ -120,12 +125,14 @@ public final class LoadSkillTool implements AgentTool {
          * 本工具只加载说明，不自动执行技能中的脚本。
          * 后续 read_file、bash 等调用仍会经过原有权限和 Hook。
          */
-        return "Loaded skill: "
-                + skill.name()
-                + "\nBase directory: "
-                + skill.directory()
-                + "\n\n"
-                + skill.instructions();
+        return ToolExecutionResult.success(
+                "Loaded skill: "
+                        + skill.name()
+                        + "\nBase directory: "
+                        + skill.directory()
+                        + "\n\n"
+                        + skill.instructions()
+        );
     }
 
 }

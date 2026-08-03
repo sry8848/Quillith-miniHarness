@@ -4,6 +4,7 @@ import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
 import java.io.IOException;
@@ -63,7 +64,7 @@ public final class EditFileTool implements AgentTool {
     }
 
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode pathNode =
@@ -75,17 +76,23 @@ public final class EditFileTool implements AgentTool {
 
         if (pathNode == null
                 || !pathNode.isTextual()) {
-            return "Error: path must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: path must be a string"
+            );
         }
 
         if (oldTextNode == null
                 || !oldTextNode.isTextual()) {
-            return "Error: old_text must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: old_text must be a string"
+            );
         }
 
         if (newTextNode == null
                 || !newTextNode.isTextual()) {
-            return "Error: new_text must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: new_text must be a string"
+            );
         }
 
         String pathText =
@@ -96,7 +103,9 @@ public final class EditFileTool implements AgentTool {
                 newTextNode.textValue();
 
         if (oldText.isEmpty()) {
-            return "Error: old_text must not be empty";
+            return ToolExecutionResult.failure(
+                    "Error: old_text must not be empty"
+            );
         }
 
         try {
@@ -106,7 +115,9 @@ public final class EditFileTool implements AgentTool {
                     );
 
             if (!Files.isRegularFile(file)) {
-                return "Error: path is not a regular file";
+                return ToolExecutionResult.failure(
+                        "Error: path is not a regular file"
+                );
             }
 
             String original =
@@ -121,8 +132,10 @@ public final class EditFileTool implements AgentTool {
                     );
 
             if (matchIndex < 0) {
-                return "Error: text not found in "
-                        + pathText;
+                return ToolExecutionResult.failure(
+                        "Error: text not found in "
+                                + pathText
+                );
             }
 
             String edited =
@@ -144,9 +157,13 @@ public final class EditFileTool implements AgentTool {
                     StandardOpenOption.WRITE
             );
 
-            return "Edited " + pathText;
+            return ToolExecutionResult.success(
+                    "Edited " + pathText
+            );
         } catch (IOException exception) {
-            return "Error: " + exception.getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: " + exception.getMessage()
+            );
         }
     }
 }

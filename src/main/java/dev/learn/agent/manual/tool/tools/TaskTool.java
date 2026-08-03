@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.AgentLoop;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -71,10 +72,10 @@ public final class TaskTool implements AgentTool {
      * 使用全新消息历史同步执行一个子任务。
      *
      * @param input 父模型生成的 task 工具参数
-     * @return 子 Agent 的最终文本结论
+     * @return 包含子 Agent 最终文本结论的工具执行结果
      */
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode descriptionNode =
@@ -90,8 +91,10 @@ public final class TaskTool implements AgentTool {
                 || !descriptionNode.isTextual()
                 || descriptionNode.textValue()
                 .isBlank()) {
-            return "Error: description must be "
-                    + "a non-blank string";
+            return ToolExecutionResult.failure(
+                    "Error: description must be "
+                            + "a non-blank string"
+            );
         }
 
         String description =
@@ -139,6 +142,12 @@ public final class TaskTool implements AgentTool {
                 "[Subagent done]"
         );
 
-        return conclusion;
+        /*
+         * 子 Agent 已经完成同步调用，结论文本本身不是工具协议错误。
+         * AgentLoop 仍返回 String，当前不能用文本前缀可靠推断其运行状态。
+         */
+        return ToolExecutionResult.success(
+                conclusion
+        );
     }
 }

@@ -4,6 +4,7 @@ import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
 import java.io.IOException;
@@ -58,7 +59,7 @@ public final class WriteFileTool implements AgentTool {
     }
 
     @Override
-    public String execute(
+    public ToolExecutionResult execute(
             JsonNode input
     ) {
         JsonNode pathNode =
@@ -68,12 +69,16 @@ public final class WriteFileTool implements AgentTool {
 
         if (pathNode == null
                 || !pathNode.isTextual()) {
-            return "Error: path must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: path must be a string"
+            );
         }
 
         if (contentNode == null
                 || !contentNode.isTextual()) {
-            return "Error: content must be a string";
+            return ToolExecutionResult.failure(
+                    "Error: content must be a string"
+            );
         }
 
         String pathText =
@@ -105,12 +110,16 @@ public final class WriteFileTool implements AgentTool {
                             StandardCharsets.UTF_8
                     ).length;
 
-            return "Wrote "
-                    + byteCount
-                    + " bytes to "
-                    + pathText;
+            return ToolExecutionResult.success(
+                    "Wrote "
+                            + byteCount
+                            + " bytes to "
+                            + pathText
+            );
         } catch (IOException exception) {
-            return "Error: " + exception.getMessage();
+            return ToolExecutionResult.failure(
+                    "Error: " + exception.getMessage()
+            );
         }
     }
 }

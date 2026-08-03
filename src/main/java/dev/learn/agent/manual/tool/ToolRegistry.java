@@ -1,6 +1,8 @@
 package dev.learn.agent.manual.tool;
 
 import com.anthropic.models.messages.ToolUnion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,6 +13,12 @@ import java.util.Objects;
  * 保存 Agent 可以使用的所有工具。
  */
 public final class ToolRegistry {
+
+    // 记录工具实现抛出的完整异常，模型只接收精简错误。
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(
+                    ToolRegistry.class
+            );
 
     /*
      * key 是模型使用的工具名称，
@@ -93,8 +101,11 @@ public final class ToolRegistry {
 
     /**
      * 根据模型返回的工具名称执行对应工具。
+     *
+     * @param toolCall 已通过协议解析的工具调用
+     * @return 可以继续回传模型的成功或失败结果
      */
-    public String execute(
+    public ToolExecutionResult execute(
             ToolCall toolCall
     ) {
         Objects.requireNonNull(
@@ -114,12 +125,49 @@ public final class ToolRegistry {
          * 模型仍可能生成错误的工具名称，因此必须检查。
          */
         if (tool == null) {
-            return "Error: unknown tool: "
-                    + toolCall.name();
+            return ToolExecutionResult.failure(
+                    "Error: unknown tool: "
+                            + toolCall.name()
+            );
         }
 
-        return tool.execute(
-                toolCall.input()
-        );
+        /*
+         * 单个工具实现的运行时异常不能打断同批其他工具，
+         * 否则已经写入历史的 tool_use 将缺少配对结果。
+         * 完整异常只进入本地日志，模型接收可操作的错误摘要。
+         */
+        try {
+            return Objects.requireNonNull(
+                    tool.execute(
+                            toolCall.input()
+                    ),
+                    "AgentTool.execute 不能返回 null"
+            );
+        } catch (RuntimeException exception) {
+            // 保存完整堆栈，避免把内部实现细节全部塞进模型上下文。
+            LOGGER.error(
+                    "工具 {} 执行时发生未处理异常",
+                    toolCall.name(),
+                    exception
+            );
+
+            // 先读取一次异常消息，避免重复调用并集中处理空消息。
+            String exceptionMessage =
+                    exception.getMessage();
+
+            // 没有消息时至少返回异常类型，保证模型得到非空错误原因。
+            String detail =
+                    exceptionMessage == null
+                            || exceptionMessage.isBlank()
+                            ? exception.getClass()
+                                    .getSimpleName()
+                            : exceptionMessage;
+
+            // 把异常降级为本次工具失败，使同批其他工具仍能继续执行。
+            return ToolExecutionResult.failure(
+                    "Error: tool execution failed unexpectedly: "
+                            + detail
+            );
+        }
     }
 }
