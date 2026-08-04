@@ -235,11 +235,15 @@ public final class PermissionHook implements AgentHook {
      * Bash 和文件写入都会复用这段逻辑，
      * 因此现在提取为独立方法。
      */
-    private HookEffect askUser(
+    private synchronized HookEffect askUser(
             String reason,
             String toolName,
             JsonNode input
     ) {
+        /*
+         * 多个工具可以在虚拟线程中并发到达审批边界。
+         * 串行读取共享 Scanner，避免两个提示争抢同一行用户输入。
+         */
         System.out.println();
         System.out.println(reason);
         System.out.println(
