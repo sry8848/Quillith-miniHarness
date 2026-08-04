@@ -512,20 +512,28 @@ public final class ManualAgentApplication {
                                 history
                         );
 
-                // [核心] 使用召回结果执行当前主 Agent 回合。
-                String answer =
-                        agentLoop.run(
-                                history,
-                                recalledMemories
-                        );
-
                 /*
-                 * 主回答已经生成，应先展示给用户，
-                 * 再执行不影响回答内容的记忆提取。
+                 * [核心] 文本增量到达时立即展示并刷新终端，
+                 * 完整响应仍由 AgentLoop 累积后写入历史。
                  */
-                System.out.println(
-                        "模型：" + answer
+                System.out.print(
+                        "模型："
                 );
+
+                agentLoop.run(
+                        history,
+                        recalledMemories,
+                        text -> {
+                            System.out.print(
+                                    text
+                            );
+
+                            System.out.flush();
+                        }
+                );
+
+                // 当前回答流结束后换行，避免后续记忆状态紧跟正文末尾。
+                System.out.println();
 
                 // [核心] 把压缩前消息转换为提取器需要的纯文本对话。
                 String extractionDialogue =

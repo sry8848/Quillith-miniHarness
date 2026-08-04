@@ -1,15 +1,27 @@
 package dev.learn.agent.manual;
 
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.core.JsonValue;
+import com.anthropic.core.ObjectMappers;
+import com.anthropic.core.http.StreamResponse;
+import com.anthropic.errors.AnthropicIoException;
+import com.anthropic.errors.AnthropicInvalidDataException;
 import com.anthropic.errors.BadRequestException;
+import com.anthropic.helpers.MessageAccumulator;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.MessageParam;
+import com.anthropic.models.messages.RawContentBlockDelta;
+import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.StopReason;
+import com.anthropic.models.messages.TextBlockParam;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUseBlock;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -24,9 +36,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 /**
  * 手写 Agent 的模型调用和工具执行循环。
@@ -38,24 +57,39 @@ public final class AgentLoop {
                     AgentLoop.class
             );
 
-    private static final long DEFAULT_MAX_TOKENS =
-            8_000;
+    // 与 SDK 使用同一套 JSON 映射规则，避免工具参数被两种解析器解释。
+    private static final ObjectMapper JSON_MAPPER =
+            ObjectMappers.jsonMapper();
 
-    private static final long ESCALATED_MAX_TOKENS =
+    private static final long MAX_OUTPUT_TOKENS =
             64_000;
 
     private static final int MAX_OUTPUT_CONTINUATIONS =
             3;
+
+    /*
+     * 只允许在响应流已经建立后重新请求一次，
+     * 避免网络持续异常时重复计费或让当前轮次无限等待。
+     */
+    private static final int MAX_STREAM_INTERRUPTION_RETRIES =
+            1;
 
     private static final String OUTPUT_CONTINUATION_PROMPT =
             "Output token limit hit. Resume directly — "
                     + "no apology, no recap. "
                     + "Pick up mid-thought.";
 
-    private static final String TOOL_CALL_RETRY_PROMPT =
-            "The previous response hit the output token limit while "
-                    + "forming tool calls. Retry the work using smaller "
-                    + "tool calls. Do not repeat completed narration.";
+    private static final String TOOL_CALL_CONTINUATION_PROMPT =
+            "The previous response hit the output token limit after "
+                    + "completing the tool calls above. Continue from their "
+                    + "results, use smaller tool calls if more work is needed, "
+                    + "and do not repeat completed work.";
+
+    private static final String STREAM_INTERRUPTION_CONTINUATION_PROMPT =
+            "The previous assistant stream ended unexpectedly after the "
+                    + "complete tool calls above. Their results are valid. "
+                    + "Continue the task from these results and do not repeat "
+                    + "the completed calls.";
 
     private final AnthropicClient client;
 
@@ -151,11 +185,13 @@ public final class AgentLoop {
      *
      * @param messages 可修改的会话消息历史
      * @param turnContext 只进入本轮模型请求、不写入会话历史的临时上下文
+     * @param textOutput 实时接收模型文本增量的输出边界
      * @return 当前任务最终 assistant 回复中的文本结论
      */
     public String run(
             List<MessageParam> messages,
-            String turnContext
+            String turnContext,
+            Consumer<String> textOutput
     ) {
         /*
          * [边界：调用方漏传本轮上下文 → 无法区分“没有召回记忆”
@@ -167,6 +203,15 @@ public final class AgentLoop {
         );
 
         /*
+         * 文本输出由调用方决定：父 Agent 展示到终端，
+         * 子 Agent 静默消费，避免内部过程混入父 Agent 输出。
+         */
+        Objects.requireNonNull(
+                textOutput,
+                "textOutput 不能为 null"
+        );
+
+        /*
          * [核心] 一次 run 对应一个新的用户回合或子任务，
          * 因此先刷新 TURN 以及更短生命周期的 Prompt Item。
          */
@@ -175,22 +220,14 @@ public final class AgentLoop {
                 runtimeContext
         );
 
-        /*
-         * 输出恢复状态只属于当前用户回合或子任务。
-         * 父子 Agent 各自调用 run()，不会共享升级和续写次数。
-         */
-        long maxTokens =
-                DEFAULT_MAX_TOKENS;
-
-        boolean outputLimitEscalated =
-                false;
-
+        // 输出续写次数只属于当前用户回合或子任务。
         int outputContinuationCount =
                 0;
 
         List<String> continuedOutputParts =
                 new ArrayList<>();
 
+        modelRounds:
         for (
                 int modelRoundCount = 1;
                 modelRoundCount <= maxModelRounds;
@@ -284,11 +321,10 @@ public final class AgentLoop {
                     requestMessages
             );
 
+            StreamingModelResponse streamingResponse;
             Message response;
             boolean hasToolUse;
-
-            boolean toolCallRetryAttempted =
-                    false;
+            boolean reachedOutputLimit;
 
             /*
              * 输出恢复属于当前正常模型轮次的内部过程。
@@ -296,41 +332,35 @@ public final class AgentLoop {
              * 也不会占用父 100 / 子 30 的主循环轮次。
              */
             while (true) {
-                response =
+                streamingResponse =
                         requestModel(
                                 messages,
                                 turnContext,
-                                maxTokens
+                                textOutput
                         );
 
-                boolean reachedOutputLimit =
+                /*
+                 * 流中断前已经闭合的工具调用可能产生了外部副作用，
+                 * 不能重新采样并假设旧执行不存在；先补齐结果再让模型续接。
+                 */
+                if (streamingResponse.interrupted()) {
+                    commitInterruptedToolRound(
+                            messages,
+                            streamingResponse.toolExecutions()
+                    );
+
+                    continue modelRounds;
+                }
+
+                response =
+                        streamingResponse.message();
+
+                reachedOutputLimit =
                         response.stopReason()
                                 .filter(
                                         StopReason.MAX_TOKENS::equals
                                 )
                                 .isPresent();
-
-                /*
-                 * 第一次截断直接把 8K 提高到 qwen3.5-flash
-                 * 已确认支持的 64K，再重试完全相同的消息历史。
-                 * 首次截断内容不入历史，避免模型重复输出同一部分。
-                 */
-                if (reachedOutputLimit
-                        && !outputLimitEscalated) {
-                    maxTokens =
-                            ESCALATED_MAX_TOKENS;
-
-                    outputLimitEscalated =
-                            true;
-
-                    LOGGER.warn(
-                            "模型输出达到 {} Token，上限提升到 {} 后重试同一请求",
-                            DEFAULT_MAX_TOKENS,
-                            ESCALATED_MAX_TOKENS
-                    );
-
-                    continue;
-                }
 
                 hasToolUse =
                         response.content()
@@ -339,51 +369,20 @@ public final class AgentLoop {
                                         ContentBlock::isToolUse
                                 );
 
-                /*
-                 * stop_reason=max_tokens 表示整条响应不完整。
-                 * 即使其中已经解析出 tool_use，也可能遗漏后续并行工具，
-                 * 因而不能执行可见部分或把截断 assistant 写入历史。
-                 */
-                if (reachedOutputLimit
-                        && hasToolUse) {
-                    if (toolCallRetryAttempted) {
-                        return "Error: tool calls remained truncated "
-                                + "after one smaller-call retry.";
-                    }
-
-                    messages.add(
-                            MessageParam.builder()
-                                    .role(
-                                            MessageParam.Role.USER
-                                    )
-                                    .content(
-                                            TOOL_CALL_RETRY_PROMPT
-                                    )
-                                    .build()
-                    );
-
-                    toolCallRetryAttempted =
-                            true;
-
-                    LOGGER.warn(
-                            "64K 输出在工具调用阶段被截断，丢弃响应并要求拆小工具调用"
-                    );
-
-                    continue;
-                }
-
                 MessageParam assistantMessage =
                         toAssistantMessage(
                                 response
                         );
 
                 /*
-                 * 只有完整响应或纯文本截断可以进入历史。
-                 * 前者将进入正常结束/工具执行，后者将通过 user 消息续写。
+                 * 带 tool_use 的 assistant 必须等全部结果准备完成后再成对提交。
+                 * 无工具响应才可以在这里单独进入历史。
                  */
-                messages.add(
-                        assistantMessage
-                );
+                if (hasToolUse) {
+                    break;
+                }
+
+                messages.add(assistantMessage);
 
                 if (!reachedOutputLimit) {
                     break;
@@ -397,13 +396,22 @@ public final class AgentLoop {
 
                 if (outputContinuationCount
                         >= MAX_OUTPUT_CONTINUATIONS) {
+                    String error =
+                            "Error: model output remained truncated after "
+                                    + MAX_OUTPUT_CONTINUATIONS
+                                    + " continuation attempts.";
+
+                    // 已流式展示正文，只追加错误，避免再次打印完整正文。
+                    textOutput.accept(
+                            "\n\n" + error
+                    );
+
                     return String.join(
                             "\n",
                             continuedOutputParts
                     )
-                            + "\n\nError: model output remained truncated after "
-                            + MAX_OUTPUT_CONTINUATIONS
-                            + " continuation attempts.";
+                            + "\n\n"
+                            + error;
                 }
 
                 messages.add(
@@ -493,6 +501,21 @@ public final class AgentLoop {
             List<ContentBlockParam> toolResults =
                     new ArrayList<>();
 
+            /*
+             * Future 在工具块闭合时创建；这里转成 Map 只负责按最终
+             * assistant 中的调用顺序取回结果，不改变后台执行顺序。
+             */
+            Map<String, CompletableFuture<ToolExecutionResult>> executionsById =
+                    new LinkedHashMap<>();
+
+            for (StreamedToolExecution execution
+                    : streamingResponse.toolExecutions()) {
+                executionsById.put(
+                        execution.toolUse().id(),
+                        execution.result()
+                );
+            }
+
             for (ContentBlock block
                     : response.content()) {
                 if (!block.isToolUse()) {
@@ -503,117 +526,29 @@ public final class AgentLoop {
                         block.asToolUse();
 
                 /*
-                 * 转换成项目内部的 ToolCall 后，
-                 * Hook 才能真正替换工具输入。
+                 * 正常协议下 Future 必然已经在 content_block_stop 时创建。
+                 * 如果端点返回了不一致事件，生成配对错误而不静默重复执行。
                  */
-                ToolCall toolCall =
-                        ToolCall.from(
-                                toolUse
+                CompletableFuture<ToolExecutionResult> execution =
+                        executionsById.remove(
+                                toolUse.id()
                         );
 
-                /*
-                 * 工具执行前依次触发：
-                 *
-                 * ToolLoggingHook
-                 * PermissionHook
-                 */
-                HookEffect beforeEffect =
-                        hookRegistry.triggerBeforeToolUse(
-                                toolCall
+                ToolExecutionResult executionResult =
+                        execution == null
+                                ? ToolExecutionResult.failure(
+                                "Streaming protocol error: complete tool call "
+                                        + "was not scheduled for execution"
+                        )
+                                : awaitToolResult(
+                                toolUse.id(),
+                                execution
                         );
-
-                ToolExecutionResult executionResult;
-
-                HookEffect combinedEffect =
-                        beforeEffect;
-
-                if (beforeEffect.decision()
-                        == HookEffect.Decision.BLOCK) {
-                    /*
-                     * 权限拒绝时不执行工具，
-                     * 但仍要把拒绝原因作为 tool_result 返回模型。
-                     */
-                    executionResult =
-                            ToolExecutionResult.failure(
-                                    beforeEffect.reason()
-                            );
-                } else {
-                    ToolCall effectiveToolCall =
-                            beforeEffect.updatedInput() == null
-                                    ? toolCall
-                                    : toolCall.withInput(
-                                            beforeEffect.updatedInput()
-                                    );
-
-                    executionResult =
-                            toolRegistry.execute(
-                                    effectiveToolCall
-                            );
-
-                    /*
-                     * 只有真正执行过的工具，
-                     * 才触发 PostToolUse Hook。
-                     */
-                    HookEffect afterEffect =
-                            hookRegistry.triggerAfterToolUse(
-                                    effectiveToolCall,
-                                    executionResult.content()
-                            );
-
-                    combinedEffect =
-                            beforeEffect.and(
-                                    afterEffect
-                            );
-
-                    if (afterEffect.updatedOutput() != null) {
-                        executionResult =
-                                new ToolExecutionResult(
-                                        afterEffect.updatedOutput(),
-                                        executionResult.error()
-                                );
-                    }
-                }
-
-                // 后续 Hook 上下文只修改输出文本，不改变成功或失败状态。
-                String output =
-                        executionResult.content();
-
-                /*
-                 * 附加上下文不会冒充工具的原始输出，
-                 * 使用明确标题与工具结果分隔后再交给模型。
-                 */
-                if (!combinedEffect.additionalContexts()
-                        .isEmpty()) {
-                    output +=
-                            "\n\nHook 追加上下文：\n"
-                                    + String.join(
-                                            "\n",
-                                            combinedEffect.additionalContexts()
-                                    );
-                }
-
-                /*
-                 * toolUseId 告诉模型：
-                 *
-                 * 这个执行结果属于哪一次工具请求。
-                 *
-                 * 同一轮存在多个工具调用时，
-                 * 不能只依靠工具名称判断对应关系。
-                 */
-                ToolResultBlockParam toolResult =
-                        ToolResultBlockParam.builder()
-                                .toolUseId(
-                                        toolUse.id()
-                                )
-                                .content(output)
-                                .isError(
-                                        executionResult.error()
-                                )
-                                .build();
 
                 toolResults.add(
-                        ContentBlockParam.ofToolResult(
-                                toolResult
+                        toToolResultBlock(
+                                toolUse.id(),
+                                executionResult
                         )
                 );
             }
@@ -625,9 +560,30 @@ public final class AgentLoop {
              * 真正准备交给模型的最终结果。
              */
             List<ContentBlockParam> limitedToolResults =
-                    contextManager.applyToolResultBudget(
+                    applyToolResultBudget(
                             toolResults
                     );
+
+            /*
+             * max_tokens 到达时已无法撤销提前执行的工具。
+             * 把续接要求放在同一条 user 消息的结果块之后，避免重新采样副作用。
+             */
+            if (reachedOutputLimit) {
+                limitedToolResults =
+                        new ArrayList<>(
+                                limitedToolResults
+                        );
+
+                limitedToolResults.add(
+                        ContentBlockParam.ofText(
+                                TextBlockParam.builder()
+                                        .text(
+                                                TOOL_CALL_CONTINUATION_PROMPT
+                                        )
+                                        .build()
+                        )
+                );
+            }
 
             /*
              * Anthropic 协议要求：
@@ -645,8 +601,13 @@ public final class AgentLoop {
                             )
                             .build();
 
-            messages.add(
-                    resultMessage
+            messages.addAll(
+                    List.of(
+                            toAssistantMessage(
+                                    response
+                            ),
+                            resultMessage
+                    )
             );
 
             /*
@@ -660,37 +621,44 @@ public final class AgentLoop {
          * 执行到这里说明最后一次模型响应仍要求调用工具，
          * Agent 没有在规定次数内生成最终答案。
          */
-        return "Error: agent reached the limit of "
-                + maxModelRounds
-                + " model rounds without a final answer.";
+        String error =
+                "Error: agent reached the limit of "
+                        + maxModelRounds
+                        + " model rounds without a final answer.";
+
+        // 主循环耗尽时没有后续模型文本，直接通过当前输出边界告知用户。
+        textOutput.accept(
+                "\n\n" + error
+        );
+
+        return error;
     }
 
     /**
      * 发送一次主模型请求，并只对输入上下文超限恢复一次。
      *
-     * 输出上限升级和续写都会调用这个入口，因此每次真实请求
+     * 输出续写也会调用这个入口，因此每次真实请求
      * 都会刷新 MODEL_CALL System Prompt；BeforeModelCall Hook 则仍只在
      * 外层正常轮次执行一次。
      *
      * @param messages 当前真实会话历史
      * @param turnContext 只进入本轮请求的临时上下文
-     * @param maxTokens 本次请求允许的最大输出 Token
+     * @param textOutput 实时接收模型文本增量的输出边界
      * @return 主模型响应
      */
     private Message requestModel(
             List<MessageParam> messages,
             String turnContext,
-            long maxTokens
+            Consumer<String> textOutput
     ) {
         try {
-            return client.messages()
-                    .create(
-                            createRequest(
-                                    messages,
-                                    turnContext,
-                                    maxTokens
-                            )
-                    );
+            return createStreamingMessage(
+                    createRequest(
+                            messages,
+                            turnContext
+                    ),
+                    textOutput
+            );
         } catch (BadRequestException exception) {
             /*
              * 普通 400 可能是参数、模型或协议错误，
@@ -722,14 +690,114 @@ public final class AgentLoop {
              * 第二次调用直接重试同一个主模型请求。
              * 这里不再捕获连续超限，避免形成无限压缩循环。
              */
-            return client.messages()
-                    .create(
-                            createRequest(
-                                    messages,
-                                    turnContext,
-                                    maxTokens
-                            )
+            return createStreamingMessage(
+                    createRequest(
+                            messages,
+                            turnContext
+                    ),
+                    textOutput
+            );
+        }
+    }
+
+    /**
+     * 同步消费模型事件流，并在流中断时有限重试同一个请求。
+     *
+     * 文本增量会立即交给调用方；工具参数和停止原因只由 SDK
+     * 累积器组装，收到 message_stop 前不会返回半条 Message。
+     *
+     * @param request 已构造完成的模型请求
+     * @param textOutput 实时接收模型文本增量的输出边界
+     * @return 收到 message_stop 后形成的完整模型响应
+     * @throws IllegalStateException 同一个响应连续两次在 message_stop 前中断
+     */
+    private Message createStreamingMessage(
+            MessageCreateParams request,
+            Consumer<String> textOutput
+    ) {
+        // 流中断恢复属于当前请求，不占用 Agent 工具循环轮次。
+        int interruptionRetries =
+                0;
+
+        while (true) {
+            // 每次重新请求都必须使用新的累积器，不能混合两条响应的事件。
+            MessageAccumulator accumulator =
+                    MessageAccumulator.create();
+
+            /*
+             * createStreaming 在拿到响应头前仍由 SDK 的 maxRetries 处理；
+             * 只有已经建立的 StreamResponse 才进入本任务的流中断恢复边界。
+             */
+            StreamResponse<RawMessageStreamEvent> streamResponse =
+                    client.messages()
+                            .createStreaming(
+                                    request
+                            );
+
+            try (streamResponse) {
+                streamResponse.stream()
+                        .forEach(
+                                event -> {
+                                    /*
+                                     * 先验证并累积事件，再向外展示文本；
+                                     * 非法事件不会先污染用户可见输出。
+                                     */
+                                    accumulator.accumulate(
+                                            event
+                                    );
+
+                                    if (!event.isContentBlockDelta()) {
+                                        return;
+                                    }
+
+                                    RawContentBlockDelta delta =
+                                            event.asContentBlockDelta()
+                                                    .delta();
+
+                                    // 只展示正文，不暴露工具 JSON 和思考增量。
+                                    if (delta.isText()) {
+                                        textOutput.accept(
+                                                delta.asText()
+                                                        .text()
+                                        );
+                                    }
+                                }
+                        );
+
+                /*
+                 * 服务端也可能在没有抛出 IOException 时提前关闭 SSE；
+                 * 此时累积器缺少 message_stop，统一按流中断处理。
+                 */
+                try {
+                    return accumulator.message();
+                } catch (IllegalStateException exception) {
+                    throw new AnthropicIoException(
+                            "响应流在 message_stop 前结束",
+                            exception
                     );
+                }
+            } catch (AnthropicIoException exception) {
+                // 第二次仍中断时保留原异常，向上提供明确的终止原因。
+                if (interruptionRetries
+                        >= MAX_STREAM_INTERRUPTION_RETRIES) {
+                    throw new IllegalStateException(
+                            "模型响应流连续中断，未保存不完整响应",
+                            exception
+                    );
+                }
+
+                // 先增加次数，保证任何下一次异常都会触发有界失败。
+                interruptionRetries++;
+
+                /*
+                 * 标准输出无法撤销已经显示的增量，
+                 * 明确标记旧内容无效比静默拼接两次生成更不易误解。
+                 */
+                textOutput.accept(
+                        "\n\n[响应流中断：上方内容未完成且未保存，"
+                                + "正在重新生成]\n\n"
+                );
+            }
         }
     }
 
@@ -819,13 +887,11 @@ public final class AgentLoop {
      *
      * @param messages 当前真实会话历史
      * @param turnContext 本轮临时上下文；空字符串表示没有
-     * @param maxTokens 本次请求允许的最大输出 Token
      * @return 可以直接发送给模型的请求
      */
     private MessageCreateParams createRequest(
             List<MessageParam> messages,
-            String turnContext,
-            long maxTokens
+            String turnContext
     ) {
         /*
          * [核心] 每次真正构造 Anthropic 请求前刷新 MODEL_CALL Item。
@@ -841,7 +907,7 @@ public final class AgentLoop {
         MessageCreateParams.Builder request =
                 MessageCreateParams.builder()
                         .model(model)
-                        .maxTokens(maxTokens)
+                        .maxTokens(MAX_OUTPUT_TOKENS)
                         .system(
                                 systemPrompt.content()
                         )
