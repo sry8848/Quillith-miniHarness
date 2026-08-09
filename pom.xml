@@ -34,6 +34,9 @@
 
         <!-- 统一手写 Agent 的运行期诊断日志版本。 -->
         <slf4j.version>2.0.18</slf4j.version>
+
+        <!-- 固定 JUnit 5 正式版，验证并发调度契约。 -->
+        <junit.version>5.14.3</junit.version>
     </properties>
 
     <dependencies>
@@ -67,6 +70,14 @@
             <artifactId>jackson-dataformat-yaml</artifactId>
             <version>${jackson-yaml.version}</version>
         </dependency>
+
+        <!-- 测试范围只引入 JUnit Jupiter，不进入应用运行期。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -76,6 +87,13 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
+            </plugin>
+
+            <!-- 固定正式版 Surefire，确保 Maven 通过 JUnit Platform 发现测试。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.5</version>
             </plugin>
         </plugins>
     </build>

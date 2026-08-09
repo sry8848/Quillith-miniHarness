@@ -32,6 +32,7 @@ import dev.learn.agent.manual.systemprompt.SystemPrompt;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.ToolCall;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
+import dev.learn.agent.manual.tool.ToolExecutionScheduler;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,8 +44,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 /**
@@ -641,7 +640,7 @@ public final class AgentLoop {
     }
 
     /**
-     * 消费一次模型事件流，并在内容块关闭时并发执行完整工具调用。
+     * 消费一次模型事件流，并在内容块关闭时按安全级别调度完整工具调用。
      *
      * 正常结束和中断恢复共用同一份完整内容块；
      * 尚未收到 content_block_stop 的当前块不会进入结果。
@@ -683,10 +682,10 @@ public final class AgentLoop {
         boolean reachedOutputLimit =
                 false;
 
-        // 创建当前模型流内执行完整工具调用的虚拟线程执行器。
-        // 设计意图：工具之间直接并发，调用顺序由 toolExecutions 保留，资源冲突留给后续任务。
-        try (ExecutorService toolExecutor =
-                     Executors.newVirtualThreadPerTaskExecutor()) {
+        // 创建当前模型流的有序并发调度边界。
+        // 设计意图：只读工具可并发，副作用工具按模型调用顺序独占执行。
+        try (ToolExecutionScheduler toolScheduler =
+                     new ToolExecutionScheduler()) {
             // 创建并消费模型响应流，把可恢复的流异常转换成稳定结果。
             try {
                 // 发送已构造的请求并取得模型事件流。
@@ -839,14 +838,16 @@ public final class AgentLoop {
                                                 )
                                                 .build();
 
-                                // 对合法输入并发执行工具，对非法输入直接创建失败结果。
+                                // 对合法输入按工具安全级别调度，对非法输入直接创建失败结果。
                                 CompletableFuture<ToolExecutionResult> future =
                                         validInput
-                                                ? CompletableFuture.supplyAsync(
+                                                ? toolScheduler.submit(
+                                                        toolRegistry.isConcurrencySafe(
+                                                                completedTool.name()
+                                                        ),
                                                         () -> executeTool(
                                                                 completedTool
-                                                        ),
-                                                        toolExecutor
+                                                        )
                                                 )
                                                 : CompletableFuture.completedFuture(
                                                         ToolExecutionResult.failure(
@@ -1152,7 +1153,7 @@ public final class AgentLoop {
     /**
      * 按模型调用顺序等待工具结果并应用现有结果预算。
      *
-     * @param executions 已经并发启动的工具调用
+     * @param executions 已按安全级别调度的工具调用
      * @return 与 tool_use 顺序一致的 tool_result 内容块
      */
     private List<ContentBlockParam> collectToolResults(
@@ -1162,10 +1163,10 @@ public final class AgentLoop {
         List<ContentBlockParam> toolResults =
                 new ArrayList<>();
 
-        // 依次等待每个并发工具任务并构造协议结果。
+        // 依次等待每个已调度工具任务并构造协议结果。
         for (PendingToolExecution execution : executions) {
             // 等待当前顺序位置对应的工具执行结果。
-            // 设计意图：Future 仍然并发运行，join 只约束结果的交付顺序。
+            // 设计意图：安全批次仍可并发运行，join 只约束结果的交付顺序。
             ToolExecutionResult result =
                     execution.resultFuture()
                             .join();
@@ -1290,10 +1291,10 @@ public final class AgentLoop {
     }
 
     /**
-     * 一个已经完整关闭并提交到虚拟线程的工具调用。
+     * 一个已经完整关闭并提交到有序并发调度器的工具调用。
      *
      * @param toolUse 完整工具请求
-     * @param resultFuture 并发执行结果
+     * @param resultFuture 按安全级别调度的执行结果
      */
     private record PendingToolExecution(
             ToolUseBlock toolUse,

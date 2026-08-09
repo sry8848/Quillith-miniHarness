@@ -136,7 +136,7 @@ public final class ManualAgentApplication {
          * 因此共享同一批基础工具实例。
          *
          * 这些工具只保存不可变的工作区依赖，
-         * 不保存某个 Agent 的消息历史，可以安全用于当前同步执行模型。
+         * 不保存某个 Agent 的消息历史；修改类工具由各轮调度器独占执行。
          */
         BashTool bashTool =
                 new BashTool(
@@ -210,7 +210,7 @@ public final class ManualAgentApplication {
          * 父子 Agent 共用同一个终端和工作区，
          * 因此共享工具日志、权限检查和大输出处理 Hook。
          *
-         * s06 当前同步执行，不存在两个 Agent 同时读取 Scanner 的问题。
+         * PermissionHook 会串行化终端确认，避免并发工具同时读取 Scanner。
          */
         ToolLoggingHook toolLoggingHook =
                 new ToolLoggingHook();

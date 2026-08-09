@@ -55,6 +55,17 @@ public final class ReadFileTool implements AgentTool {
         return DEFINITION;
     }
 
+    /**
+     * 判断文件读取是否可以进入并发批次。
+     *
+     * @return 固定返回 true，因为该工具不会修改工作区或内部状态
+     */
+    @Override
+    public boolean isConcurrencySafe() {
+        // 该工具只读取文件，写工具的顺序边界由调度器负责建立。
+        return true;
+    }
+
     @Override
     public ToolExecutionResult execute(
             JsonNode input

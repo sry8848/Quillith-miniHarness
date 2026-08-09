@@ -17,6 +17,18 @@ public interface AgentTool {
     Tool definition();
 
     /**
+     * 判断该工具是否可以与其他并发安全工具同时执行。
+     *
+     * 未明确声明的工具默认独占执行，避免新增工具意外绕过副作用边界。
+     *
+     * @return 可以安全并发时返回 true，否则返回 false
+     */
+    default boolean isConcurrencySafe() {
+        // 默认按存在副作用处理，只有实现类确认只读后才能主动放开。
+        return false;
+    }
+
+    /**
      * 执行模型请求的工具操作。
      *
      * @param input 模型生成的 JSON 参数

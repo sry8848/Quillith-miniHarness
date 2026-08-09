@@ -100,6 +100,34 @@ public final class ToolRegistry {
     }
 
     /**
+     * 判断指定工具是否明确声明为并发安全。
+     *
+     * 工具名称来自已经完成协议解析的 tool_use 块；未知名称按不安全处理，
+     * 具体的 unknown tool 错误仍由 {@link #execute(ToolCall)} 返回。
+     *
+     * @param toolName 模型请求调用的工具名称
+     * @return 已注册且明确声明并发安全时返回 true，否则返回 false
+     */
+    public boolean isConcurrencySafe(
+            String toolName
+    ) {
+        Objects.requireNonNull(
+                toolName,
+                "工具名称不能为空"
+        );
+
+        // 只有注册工具主动声明安全时才允许进入并发批次。
+        AgentTool tool =
+                tools.get(
+                        toolName
+                );
+
+        // 未知工具采用默认独占策略，避免错误名称绕过副作用边界。
+        return tool != null
+                && tool.isConcurrencySafe();
+    }
+
+    /**
      * 根据模型返回的工具名称执行对应工具。
      *
      * @param toolCall 已通过协议解析的工具调用

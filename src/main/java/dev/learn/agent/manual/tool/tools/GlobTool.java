@@ -56,6 +56,17 @@ public final class GlobTool implements AgentTool {
         return DEFINITION;
     }
 
+    /**
+     * 判断工作区路径扫描是否可以进入并发批次。
+     *
+     * @return 固定返回 true，因为该工具不会修改工作区或内部状态
+     */
+    @Override
+    public boolean isConcurrencySafe() {
+        // Files.walk 只读取目录结构，写操作由独占工具阻止并发。
+        return true;
+    }
+
     @Override
     public ToolExecutionResult execute(
             JsonNode input

@@ -68,6 +68,17 @@ public final class LoadSkillTool implements AgentTool {
     }
 
     /**
+     * 判断技能查询是否可以进入并发批次。
+     *
+     * @return 固定返回 true，因为注册表在启动后只读
+     */
+    @Override
+    public boolean isConcurrencySafe() {
+        // SkillRegistry 构造完成后不再修改，并发查询不会产生状态冲突。
+        return true;
+    }
+
+    /**
      * 按精确名称返回技能说明。
      *
      * @param input 模型生成的工具参数
