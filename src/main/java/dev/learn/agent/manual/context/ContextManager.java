@@ -230,7 +230,7 @@ public final class ContextManager {
     }
 
     /**
-     * 保留会话头部和最近消息，裁掉中间的旧消息。
+     * 保留会话头部和最近消息，并在裁掉中间旧消息前保存完整记录。
      *
      * tool_use 与紧随其后的 tool_result 是一个协议整体；
      * 裁剪边界不能只保留其中一条，否则下一次模型请求可能失去关联。
@@ -332,6 +332,30 @@ public final class ContextManager {
         int snippedCount =
                 tailStart - headEnd;
 
+        /*
+         * [核心] 中段裁剪会永久替换 AgentLoop 持有的真实历史，
+         * 因此必须先保存本次裁剪前的全部消息，才能继续执行有损操作。
+         */
+        Path transcriptPath =
+                saveTranscript(
+                        messages
+                );
+
+        /*
+         * 模型通过 read_file 使用工作区相对路径。
+         * 正斜杠避免把 Windows 专用路径格式写入模型上下文。
+         */
+        String relativeTranscriptPath =
+                paths.workspace()
+                        .relativize(
+                                transcriptPath
+                        )
+                        .toString()
+                        .replace(
+                                '\\',
+                                '/'
+                        );
+
         // 预分配“头部 + 占位消息 + 尾部”所需容量。
         List<MessageParam> compacted =
                 new ArrayList<>(
@@ -360,8 +384,10 @@ public final class ContextManager {
                         .content(
                                 "[Context compacted: "
                                         + snippedCount
-                                        + " middle messages were omitted. "
-                                        + "Re-read files or rerun tools "
+                                        + " middle messages were archived at "
+                                        + relativeTranscriptPath
+                                        + ". Read the transcript, re-read files, "
+                                        + "or rerun tools "
                                         + "if omitted details are needed.]"
                         )
                         .build()

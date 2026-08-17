@@ -26,8 +26,10 @@ public final class TodoWriteTool implements AgentTool {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "todo_write",
-                    "开始多步骤任务前，使用此工具创建计划；"
-                            + "执行过程中再次调用以更新各任务状态。",
+                    "为当前会话中的当前工作维护执行清单；"
+                            + "执行过程中再次调用以更新步骤状态。"
+                            + "跨会话项目任务、依赖和 owner "
+                            + "请使用 create_task 等持久化任务工具。",
                     Map.of(
                             "todos",
                             JsonValue.from(

@@ -25,9 +25,10 @@ public final class TaskTool implements AgentTool {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "task",
-                    "将需要广泛探索代码库的复杂、边界清晰且可独立完成的"
-                            + "子任务委派给隔离的子智能体；"
-                            + "子智能体只返回最终结论。",
+                    "同步委派一个边界清晰且可独立完成的工作给隔离子智能体；"
+                            + "子智能体只返回最终结论，本工具不创建或更新"
+                            + "跨会话持久化任务。项目任务状态请使用 create_task、"
+                            + "claim_task 和 complete_task。",
                     Map.of(
                             "description",
                             ToolDefinitionFactory.stringProperty(

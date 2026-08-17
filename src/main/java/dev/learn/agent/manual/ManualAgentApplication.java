@@ -25,6 +25,7 @@ import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.systemprompt.WorkspaceSystemPromptProvider;
+import dev.learn.agent.manual.task.TaskStore;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.tools.*;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
@@ -63,6 +64,13 @@ public final class ManualAgentApplication {
      */
     private static final int MAX_SUBAGENT_MODEL_ROUNDS =
             30;
+
+    /*
+     * 持久化任务的 owner 由 Harness 绑定，
+     * 不允许模型通过工具参数伪造或替换执行者身份。
+     */
+    private static final String MAIN_AGENT_OWNER =
+            "main-agent";
 
     /**
      * 启动交互式 Coding Agent。
@@ -130,6 +138,14 @@ public final class ManualAgentApplication {
         TodoState todoState =
                 new TodoState();
 
+        /*
+         * 新版 s10 的项目任务通过工作区 .tasks 目录跨会话保存。
+         * TaskStore 是任务状态、依赖检查和文件发布的唯一边界。
+         */
+        TaskStore taskStore =
+                new TaskStore(
+                        paths
+                );
 
         /*
          * 父子 Agent 操作同一个工作区，
@@ -181,6 +197,23 @@ public final class ManualAgentApplication {
                 new TodoWriteTool(
                         todoState
                 ),
+                new CreateTaskTool(
+                        taskStore
+                ),
+                new ListTasksTool(
+                        taskStore
+                ),
+                new GetTaskTool(
+                        taskStore
+                ),
+                new ClaimTaskTool(
+                        taskStore,
+                        MAIN_AGENT_OWNER
+                ),
+                new CompleteTaskTool(
+                        taskStore,
+                        MAIN_AGENT_OWNER
+                ),
                 new LoadSkillTool(
                         skillRegistry
                 )
@@ -190,6 +223,7 @@ public final class ManualAgentApplication {
          * 子 Agent 使用独立的工具白名单。
          *
          * 不提供 todo_write，避免覆盖主会话规划状态；
+         * 不提供持久化任务工具，任务图由父 Agent 协调；
          * 不提供 task，从能力层阻止递归委派。
          */
         ToolRegistry subagentToolRegistry =
@@ -412,7 +446,7 @@ public final class ManualAgentApplication {
                 new ArrayList<>();
 
         System.out.println(
-                "s10 System Prompt Agent"
+                "s10 Task System Agent"
         );
 
         System.out.println(
