@@ -23,6 +23,7 @@ import com.anthropic.models.messages.ToolUseBlock;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -31,8 +32,8 @@ import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.ToolCall;
+import dev.learn.agent.manual.tool.ToolCallDispatcher;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
-import dev.learn.agent.manual.tool.ToolExecutionScheduler;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -105,6 +106,9 @@ public final class AgentLoop {
     // 保存可供模型调用的工具注册表。
     private final ToolRegistry toolRegistry;
 
+    // 保存当前 AgentLoop 独有的后台任务生命周期调度器。
+    private final BackgroundTaskScheduler backgroundScheduler;
+
     // 保存模型调用和工具调用生命周期中的 Hook 注册表。
     private final HookRegistry hookRegistry;
 
@@ -126,6 +130,7 @@ public final class AgentLoop {
      * @param toolRegistry 工具注册表
      * @param hookRegistry Hook 注册表
      * @param contextManager 上下文治理管理器
+     * @param backgroundScheduler 当前 AgentLoop 的后台调度器
      * @param maxModelRounds 最大业务模型轮次
      * @throws NullPointerException 任一对象依赖为 null 时抛出
      * @throws IllegalArgumentException 最大业务模型轮次不大于 0 时抛出
@@ -138,6 +143,7 @@ public final class AgentLoop {
             ToolRegistry toolRegistry,
             HookRegistry hookRegistry,
             ContextManager contextManager,
+            BackgroundTaskScheduler backgroundScheduler,
             int maxModelRounds
     ) {
         // 校验并保存模型客户端。
@@ -173,6 +179,13 @@ public final class AgentLoop {
                 Objects.requireNonNull(
                         toolRegistry,
                         "ToolRegistry 不能为空"
+                );
+
+        // 保存当前 AgentLoop 独有的后台任务调度器。
+        this.backgroundScheduler =
+                Objects.requireNonNull(
+                        backgroundScheduler,
+                        "BackgroundTaskScheduler 不能为空"
                 );
 
         // 校验并保存 Hook 注册表。
@@ -682,10 +695,13 @@ public final class AgentLoop {
         boolean reachedOutputLimit =
                 false;
 
-        // 创建当前模型流的有序并发调度边界。
-        // 设计意图：只读工具可并发，副作用工具按模型调用顺序独占执行。
-        try (ToolExecutionScheduler toolScheduler =
-                     new ToolExecutionScheduler()) {
+        // 创建当前模型流的前台顺序调度和后台任务分流边界。
+        // 设计意图：后台调用不进入前台依赖链，但仍复用同一个工具执行管线。
+        try (ToolCallDispatcher toolDispatcher =
+                     new ToolCallDispatcher(
+                             toolRegistry,
+                             backgroundScheduler
+                     )) {
             // 创建并消费模型响应流，把可恢复的流异常转换成稳定结果。
             try {
                 // 发送已构造的请求并取得模型事件流。
@@ -838,22 +854,28 @@ public final class AgentLoop {
                                                 )
                                                 .build();
 
-                                // 对合法输入按工具安全级别调度，对非法输入直接创建失败结果。
-                                CompletableFuture<ToolExecutionResult> future =
-                                        validInput
-                                                ? toolScheduler.submit(
-                                                        toolRegistry.isConcurrencySafe(
-                                                                completedTool.name()
-                                                        ),
-                                                        () -> executeTool(
-                                                                completedTool
-                                                        )
-                                                )
-                                                : CompletableFuture.completedFuture(
-                                                        ToolExecutionResult.failure(
-                                                                "Error: tool input must be a valid JSON object."
-                                                        )
-                                                );
+                                // 对合法输入按执行模式分流，对非法输入直接创建失败结果。
+                                CompletableFuture<ToolExecutionResult> future;
+
+                                if (validInput) {
+                                    // 分流器只读取模式，真实执行仍走 AgentLoop 公共工具管线。
+                                    future =
+                                            toolDispatcher.submit(
+                                                    ToolCall.from(
+                                                            completedTool
+                                                    ),
+                                                    () -> executeTool(
+                                                            completedTool
+                                                    )
+                                            );
+                                } else {
+                                    future =
+                                            CompletableFuture.completedFuture(
+                                                    ToolExecutionResult.failure(
+                                                            "Error: tool input must be a valid JSON object."
+                                                    )
+                                            );
+                                }
 
                                 // 把完整工具调用加入 assistant 协议内容。
                                 assistantContent.add(

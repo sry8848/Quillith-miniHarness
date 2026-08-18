@@ -128,6 +128,33 @@ public final class ToolRegistry {
     }
 
     /**
+     * 根据工具调用选择前台或后台调度路径。
+     *
+     * @param toolCall 已通过协议解析的工具调用
+     * @return 已注册工具声明的执行模式；未知工具固定进入前台
+     */
+    public ToolExecutionMode executionMode(
+            ToolCall toolCall
+    ) {
+        Objects.requireNonNull(
+                toolCall,
+                "ToolCall 不能为空"
+        );
+
+        AgentTool tool =
+                tools.get(
+                        toolCall.name()
+                );
+
+        // 未知工具不能借助错误名称绕过前台工具安全边界。
+        return tool == null
+                ? ToolExecutionMode.FOREGROUND
+                : tool.executionMode(
+                        toolCall.input()
+                );
+    }
+
+    /**
      * 根据模型返回的工具名称执行对应工具。
      *
      * @param toolCall 已通过协议解析的工具调用

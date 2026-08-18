@@ -3,9 +3,11 @@ package dev.learn.agent.manual;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.MessageParam;
+import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
+import dev.learn.agent.manual.hook.hooks.BackgroundTaskHook;
 import dev.learn.agent.manual.hook.hooks.LargeOutputHook;
 import dev.learn.agent.manual.hook.hooks.PermissionHook;
 import dev.learn.agent.manual.hook.hooks.SessionSummaryHook;
@@ -149,15 +151,29 @@ public final class ManualAgentApplication {
 
         /*
          * 父子 Agent 操作同一个工作区，
-         * 因此共享同一批基础工具实例。
+         * 因此共享只保存工作区依赖的文件工具实例。
          *
-         * 这些工具只保存不可变的工作区依赖，
-         * 不保存某个 Agent 的消息历史；修改类工具由各轮调度器独占执行。
+         * BashTool 必须按 AgentLoop 分开创建，
+         * 因为后台任务状态和活动进程属于各自的生命周期。
          */
-        BashTool bashTool =
+        BackgroundTaskScheduler parentBackgroundScheduler =
+                new BackgroundTaskScheduler();
+
+        BashTool parentBashTool =
                 new BashTool(
                         workspace,
-                        bashExecutable
+                        bashExecutable,
+                        parentBackgroundScheduler
+                );
+
+        BackgroundTaskScheduler subagentBackgroundScheduler =
+                new BackgroundTaskScheduler();
+
+        BashTool subagentBashTool =
+                new BashTool(
+                        workspace,
+                        bashExecutable,
+                        subagentBackgroundScheduler
                 );
 
         ReadFileTool readFileTool =
@@ -189,7 +205,7 @@ public final class ManualAgentApplication {
                 new ToolRegistry();
 
         toolRegistry.registerAll(
-                bashTool,
+                parentBashTool,
                 readFileTool,
                 writeFileTool,
                 editFileTool,
@@ -230,7 +246,7 @@ public final class ManualAgentApplication {
                 new ToolRegistry();
 
         subagentToolRegistry.registerAll(
-                bashTool,
+                subagentBashTool,
                 readFileTool,
                 writeFileTool,
                 editFileTool,
@@ -274,7 +290,10 @@ public final class ManualAgentApplication {
                 new TodoReminderHook(
                         todoState
                 ),
-                new SessionSummaryHook()
+                new SessionSummaryHook(),
+                new BackgroundTaskHook(
+                        parentBackgroundScheduler
+                )
         );
 
         /*
@@ -290,7 +309,10 @@ public final class ManualAgentApplication {
         subagentHookRegistry.registerAll(
                 toolLoggingHook,
                 permissionHook,
-                largeOutputHook
+                largeOutputHook,
+                new BackgroundTaskHook(
+                        subagentBackgroundScheduler
+                )
         );
 
         /*
@@ -390,6 +412,7 @@ public final class ManualAgentApplication {
                         subagentToolRegistry,
                         subagentHookRegistry,
                         contextManager,
+                        subagentBackgroundScheduler,
                         MAX_SUBAGENT_MODEL_ROUNDS
                 );
 
@@ -434,6 +457,7 @@ public final class ManualAgentApplication {
                         toolRegistry,
                         hookRegistry,
                         contextManager,
+                        parentBackgroundScheduler,
                         MAX_PARENT_MODEL_ROUNDS
                 );
 
@@ -446,7 +470,7 @@ public final class ManualAgentApplication {
                 new ArrayList<>();
 
         System.out.println(
-                "s10 Task System Agent"
+                "s11 Background Task Scheduler Agent"
         );
 
         System.out.println(
@@ -456,7 +480,7 @@ public final class ManualAgentApplication {
         try {
             while (true) {
                 System.out.println();
-                System.out.print("s10 >> ");
+                System.out.print("s11 >> ");
 
                 if (!scanner.hasNextLine()) {
                     break;
@@ -630,6 +654,10 @@ public final class ManualAgentApplication {
 
             }
         } finally {
+            parentBackgroundScheduler.close();
+            subagentBackgroundScheduler.close();
+            parentBashTool.close();
+            subagentBashTool.close();
             client.close();
             scanner.close();
         }

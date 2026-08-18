@@ -29,6 +29,19 @@ public interface AgentTool {
     }
 
     /**
+     * 根据本次输入选择工具进入的调度路径。
+     *
+     * @param input 模型生成的 JSON 参数
+     * @return 工具调用的执行模式，默认进入前台调度器
+     */
+    default ToolExecutionMode executionMode(
+            JsonNode input
+    ) {
+        // 只有明确支持后台语义的工具才可以脱离前台顺序调度。
+        return ToolExecutionMode.FOREGROUND;
+    }
+
+    /**
      * 执行模型请求的工具操作。
      *
      * @param input 模型生成的 JSON 参数

@@ -1,9 +1,12 @@
 package dev.learn.agent.manual.tool.tools;
 
+import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
+import dev.learn.agent.manual.tool.ToolExecutionMode;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 
 import java.io.ByteArrayOutputStream;
@@ -15,7 +18,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -24,7 +29,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * 使用 Git Bash 执行 Shell 命令。
  */
-public final class BashTool implements AgentTool {
+public final class BashTool implements AgentTool, AutoCloseable {
 
     private static final int TIMEOUT_SECONDS = 120;
 
@@ -42,11 +47,23 @@ public final class BashTool implements AgentTool {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "bash",
-                    "Run a Bash command in the workspace.",
+                    "Run a Bash command in the workspace. "
+                            + "Set run_in_background=true only for a command "
+                            + "that may start immediately. The command result "
+                            + "is delivered to this agent before its final answer.",
                     Map.of(
                             "command",
                             ToolDefinitionFactory.stringProperty(
                                     "The Bash command to execute."
+                            ),
+                            "run_in_background",
+                            JsonValue.from(
+                                    Map.of(
+                                            "type",
+                                            "boolean",
+                                            "description",
+                                            "Start the command in the background."
+                                    )
                             )
                     ),
                     List.of("command")
@@ -56,15 +73,24 @@ public final class BashTool implements AgentTool {
 
     private final Path bashExecutable;
 
+    // 当前 AgentLoop 独有的后台任务调度器。
+    private final BackgroundTaskScheduler backgroundScheduler;
+
+    // 保存尚未退出的 Bash 进程，应用关闭时统一终止它们。
+    private final Set<Process> runningProcesses =
+            ConcurrentHashMap.newKeySet();
+
     /**
      * 创建 Bash 工具。
      *
-     * @param workspace      命令默认执行目录
-     * @param bashExecutable Git Bash 的 bash.exe 路径
+     * @param workspace           命令默认执行目录
+     * @param bashExecutable      Git Bash 的 bash.exe 路径
+     * @param backgroundScheduler 当前 AgentLoop 的后台任务调度器
      */
     public BashTool(
             Path workspace,
-            Path bashExecutable
+            Path bashExecutable,
+            BackgroundTaskScheduler backgroundScheduler
     ) {
         this.workspace =
                 Objects.requireNonNull(
@@ -77,10 +103,16 @@ public final class BashTool implements AgentTool {
         this.bashExecutable =
                 Objects.requireNonNull(
                                 bashExecutable,
-                                "Bash 路径不能为空"
+                        "Bash 路径不能为空"
                         )
                         .toAbsolutePath()
                         .normalize();
+
+        this.backgroundScheduler =
+                Objects.requireNonNull(
+                        backgroundScheduler,
+                        "BackgroundTaskScheduler 不能为空"
+                );
 
         /*
          * 这些路径来自程序内部配置，
@@ -110,6 +142,28 @@ public final class BashTool implements AgentTool {
     }
 
     /**
+     * 读取本次 Bash 调用是否明确要求后台执行。
+     *
+     * @param input 模型生成的 JSON 参数
+     * @return 布尔值为 true 时进入后台调度器，否则进入前台
+     */
+    @Override
+    public ToolExecutionMode executionMode(
+            JsonNode input
+    ) {
+        JsonNode runInBackgroundNode =
+                input.get(
+                        "run_in_background"
+                );
+
+        return runInBackgroundNode != null
+                && runInBackgroundNode.isBoolean()
+                && runInBackgroundNode.booleanValue()
+                ? ToolExecutionMode.BACKGROUND
+                : ToolExecutionMode.FOREGROUND;
+    }
+
+    /**
      * 执行模型生成的 Bash 命令。
      */
     @Override
@@ -131,6 +185,46 @@ public final class BashTool implements AgentTool {
         String command =
                 commandNode.textValue();
 
+        JsonNode runInBackgroundNode =
+                input.get(
+                        "run_in_background"
+                );
+
+        if (runInBackgroundNode != null
+                && !runInBackgroundNode.isBoolean()) {
+            return ToolExecutionResult.failure(
+                    "Error: run_in_background must be a boolean"
+            );
+        }
+
+        if (runInBackgroundNode != null
+                && runInBackgroundNode.booleanValue()) {
+            String taskId =
+                    backgroundScheduler.start(
+                            command,
+                            () -> executeSynchronously(
+                                    command
+                            )
+                    );
+
+            return ToolExecutionResult.success(
+                    "Background task "
+                            + taskId
+                            + " started. The command result will be "
+                            + "delivered before the final answer."
+            );
+        }
+
+        return executeSynchronously(command);
+    }
+
+    /**
+     * 同步执行 Bash 命令，并保留原有超时、退出码和输出限制。
+     */
+    private ToolExecutionResult executeSynchronously(
+            String command
+    ) {
+
         ProcessBuilder processBuilder =
                 new ProcessBuilder(
                         bashExecutable.toString(),
@@ -145,12 +239,25 @@ public final class BashTool implements AgentTool {
                         /*
                          * 把标准错误合并进标准输出，
                          * 最终一起返回给模型。
-                         */
+                        */
                         .redirectErrorStream(true);
 
+        Process process;
+
         try {
-            Process process =
+            process =
                     processBuilder.start();
+        } catch (IOException exception) {
+            return ToolExecutionResult.failure(
+                    "Error: failed to start Bash: "
+                            + exception.getMessage()
+            );
+        }
+
+        // 进程创建成功后立即登记，确保 close() 能看到后台 Bash。
+        runningProcesses.add(process);
+
+        try {
 
             /*
              * 单独使用一个虚拟线程持续读取进程输出。
@@ -175,17 +282,8 @@ public final class BashTool implements AgentTool {
                         );
 
                 if (!finished) {
-                    /*
-                     * 先终止 Bash 启动的子进程，
-                     * 再终止 Bash 本身。
-                     */
-                    process.descendants()
-                            .forEach(
-                                    ProcessHandle::destroyForcibly
-                            );
-
-                    process.destroyForcibly();
-                    process.waitFor();
+                    // 超时后统一终止 Bash 及其子进程，避免留下真实后台命令。
+                    stopProcess(process);
 
                     return ToolExecutionResult.failure(
                             "Error: command timed out after "
@@ -225,7 +323,7 @@ public final class BashTool implements AgentTool {
                  * Shell 进程正常结束不代表命令成功，
                  * 非零退出码必须作为失败状态交给模型。
                  */
-                return exitCode == 0
+                    return exitCode == 0
                         ? ToolExecutionResult.success(
                                 result
                         )
@@ -233,12 +331,10 @@ public final class BashTool implements AgentTool {
                                 result
                         );
             }
-        } catch (IOException exception) {
-            return ToolExecutionResult.failure(
-                    "Error: failed to start Bash: "
-                            + exception.getMessage()
-            );
         } catch (InterruptedException exception) {
+            // 当前执行线程被中断时同时终止 Bash，避免 Java 任务退出而进程继续运行。
+            stopProcess(process);
+
             /*
              * 恢复线程的中断标记，
              * 让上层代码仍然知道线程曾被中断。
@@ -255,7 +351,42 @@ public final class BashTool implements AgentTool {
                             + exception.getCause()
                             .getMessage()
             );
+        } finally {
+            // 命令正常结束、失败或被关闭后都移除进程登记。
+            runningProcesses.remove(process);
         }
+    }
+
+    /**
+     * 终止 Bash 进程及其子进程，并等待 Bash 退出。
+     */
+    private void stopProcess(
+            Process process
+    ) {
+        // 先终止 Bash 派生的真实命令，再终止 Bash 主进程。
+        process.descendants()
+                .forEach(
+                        ProcessHandle::destroyForcibly
+                );
+
+        process.destroyForcibly();
+
+        try {
+            process.waitFor();
+        } catch (InterruptedException exception) {
+            Thread.currentThread()
+                    .interrupt();
+        }
+    }
+
+    /**
+     * 终止当前工具仍然持有的全部 Bash 进程。
+     */
+    @Override
+    public void close() {
+        runningProcesses.forEach(
+                this::stopProcess
+        );
     }
 
     /**
