@@ -11,6 +11,7 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Scanner;
 
 /**
@@ -40,6 +41,27 @@ public final class PermissionHook implements AgentHook {
             "rm ",
             "> /etc/",
             "chmod 777"
+    );
+
+    /*
+     * MCP 工具名使用 mcp__git__ 前缀，
+     * 让权限规则可以区分本地工具和官方 Git Server 工具。
+     */
+    private static final String MCP_GIT_TOOL_PREFIX =
+            "mcp__git__";
+
+    /*
+     * 官方 Git Server 当前明确提供的只读工具。
+     * 未列出的 Git MCP 工具默认走人工确认，避免新工具悄悄获得写权限。
+     */
+    private static final Set<String> MCP_GIT_READ_ONLY_TOOLS = Set.of(
+            "git_status",
+            "git_diff_unstaged",
+            "git_diff_staged",
+            "git_diff",
+            "git_log",
+            "git_show",
+            "git_branch"
     );
 
     /*
@@ -92,6 +114,10 @@ public final class PermissionHook implements AgentHook {
          * beforeToolUse 只负责分发，
          * 具体规则分别放在对应的权限方法中。
          */
+        if (toolCall.name().startsWith(MCP_GIT_TOOL_PREFIX)) {
+            return checkGitMcpPermission(toolCall);
+        }
+
         return switch (toolCall.name()) {
             case "bash" ->
                     checkBashPermission(input);
@@ -108,6 +134,32 @@ public final class PermissionHook implements AgentHook {
             default ->
                     HookEffect.proceed();
         };
+    }
+
+    /**
+     * 检查官方 Git MCP 工具权限。
+     *
+     * @param toolCall 带有 mcp__git__ 命名空间的工具调用
+     * @return 只读工具直接放行，写工具或未知工具要求用户确认
+     */
+    private HookEffect checkGitMcpPermission(
+            ToolCall toolCall
+    ) {
+        String remoteToolName =
+                toolCall.name()
+                        .substring(
+                                MCP_GIT_TOOL_PREFIX.length()
+                        );
+
+        if (MCP_GIT_READ_ONLY_TOOLS.contains(remoteToolName)) {
+            return HookEffect.proceed();
+        }
+
+        return askUser(
+                "Git MCP 工具可能修改仓库",
+                toolCall.name(),
+                toolCall.input()
+        );
     }
 
     /**

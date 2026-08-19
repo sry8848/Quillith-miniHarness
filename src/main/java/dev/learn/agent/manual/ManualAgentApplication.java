@@ -14,6 +14,8 @@ import dev.learn.agent.manual.hook.hooks.SessionSummaryHook;
 import dev.learn.agent.manual.hook.hooks.TodoReminderHook;
 import dev.learn.agent.manual.hook.hooks.ToolLoggingHook;
 import dev.learn.agent.manual.hook.hooks.WorkspaceLoggingHook;
+import dev.learn.agent.manual.mcp.GitMcpClient;
+import dev.learn.agent.manual.mcp.McpAgentTool;
 import dev.learn.agent.manual.memory.MemoryConsolidator;
 import dev.learn.agent.manual.memory.MemoryDialogueFormatter;
 import dev.learn.agent.manual.memory.MemoryEntry;
@@ -32,6 +34,7 @@ import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.tools.*;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import dev.learn.agent.manual.tool.entity.TodoState;
+import io.modelcontextprotocol.spec.McpSchema;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -234,6 +237,37 @@ public final class ManualAgentApplication {
                         skillRegistry
                 )
         );
+
+        /*
+         * 主 Agent 在启动阶段连接官方 Git MCP Server，
+         * 并把 tools/list 返回的工具注册到主工具表。
+         *
+         * MCP 工具只进入父 Agent，避免子 Agent 绕过主会话的 Git 权限边界。
+         */
+        GitMcpClient gitMcpClient =
+                new GitMcpClient(
+                        workspace
+                );
+
+        try {
+            gitMcpClient.initialize();
+
+            List<McpSchema.Tool> gitTools =
+                    gitMcpClient.listTools();
+
+            for (McpSchema.Tool gitTool : gitTools) {
+                toolRegistry.register(
+                        new McpAgentTool(
+                                gitMcpClient,
+                                gitTool
+                        )
+                );
+            }
+        } catch (RuntimeException exception) {
+            // 启动阶段尚未进入主循环，无法依赖下面的会话 finally，因此这里立即关闭子进程。
+            gitMcpClient.close();
+            throw exception;
+        }
 
         /*
          * 子 Agent 使用独立的工具白名单。
@@ -658,6 +692,7 @@ public final class ManualAgentApplication {
             subagentBackgroundScheduler.close();
             parentBashTool.close();
             subagentBashTool.close();
+            gitMcpClient.close();
             client.close();
             scanner.close();
         }
