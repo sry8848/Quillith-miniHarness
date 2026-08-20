@@ -19,7 +19,7 @@ import java.util.Objects;
  * <p>这个类只负责 MCP 协议边界：启动子进程、完成初始化、发现工具、调用工具和关闭连接。
  * AgentTool 适配逻辑由 {@link McpAgentTool} 负责，避免把 MCP SDK 类型扩散到 Agent 主循环。</p>
  */
-public final class GitMcpClient implements AutoCloseable {
+public final class GitMcpClient implements McpToolClient {
 
     // 官方参考 Git Server 的 Python 命令入口，由 uvx 负责准备运行环境。
     private static final String UVX_COMMAND =

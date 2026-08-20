@@ -15,7 +15,9 @@ import dev.learn.agent.manual.hook.hooks.TodoReminderHook;
 import dev.learn.agent.manual.hook.hooks.ToolLoggingHook;
 import dev.learn.agent.manual.hook.hooks.WorkspaceLoggingHook;
 import dev.learn.agent.manual.mcp.GitMcpClient;
+import dev.learn.agent.manual.mcp.GitHubMcpClient;
 import dev.learn.agent.manual.mcp.McpAgentTool;
+import dev.learn.agent.manual.mcp.McpToolClient;
 import dev.learn.agent.manual.memory.MemoryConsolidator;
 import dev.learn.agent.manual.memory.MemoryDialogueFormatter;
 import dev.learn.agent.manual.memory.MemoryEntry;
@@ -109,6 +111,19 @@ public final class ManualAgentApplication {
                 || apiKey.isBlank()) {
             throw new IllegalStateException(
                     "缺少环境变量 DASHSCOPE_API_KEY"
+            );
+        }
+
+        // 远程 GitHub MCP 使用独立的 GitHub Token，不能复用模型服务的 API Key。
+        String githubToken =
+                System.getenv(
+                        "GITHUB_PERSONAL_ACCESS_TOKEN"
+                );
+
+        if (githubToken == null
+                || githubToken.isBlank()) {
+            throw new IllegalStateException(
+                    "缺少环境变量 GITHUB_PERSONAL_ACCESS_TOKEN"
             );
         }
 
@@ -239,32 +254,36 @@ public final class ManualAgentApplication {
         );
 
         /*
-         * 主 Agent 在启动阶段连接官方 Git MCP Server，
-         * 并把 tools/list 返回的工具注册到主工具表。
+         * 主 Agent 在启动阶段连接本地 Git MCP 和远程 GitHub MCP，
+         * 并把两个 tools/list 返回的工具注册到同一个主工具表。
          *
-         * MCP 工具只进入父 Agent，避免子 Agent 绕过主会话的 Git 权限边界。
+         * MCP 工具只进入父 Agent，避免子 Agent 绕过主会话的 MCP 权限边界。
          */
         GitMcpClient gitMcpClient =
                 new GitMcpClient(
                         workspace
                 );
 
-        try {
-            gitMcpClient.initialize();
-
-            List<McpSchema.Tool> gitTools =
-                    gitMcpClient.listTools();
-
-            for (McpSchema.Tool gitTool : gitTools) {
-                toolRegistry.register(
-                        new McpAgentTool(
-                                gitMcpClient,
-                                gitTool
-                        )
+        GitHubMcpClient githubMcpClient =
+                new GitHubMcpClient(
+                        githubToken
                 );
-            }
+
+        try {
+            registerMcpTools(
+                    toolRegistry,
+                    gitMcpClient,
+                    "git"
+            );
+
+            registerMcpTools(
+                    toolRegistry,
+                    githubMcpClient,
+                    "github"
+            );
         } catch (RuntimeException exception) {
-            // 启动阶段尚未进入主循环，无法依赖下面的会话 finally，因此这里立即关闭子进程。
+            // 启动阶段尚未进入主循环，无法依赖下面的会话 finally，因此这里立即关闭两个 MCP 连接。
+            githubMcpClient.close();
             gitMcpClient.close();
             throw exception;
         }
@@ -692,9 +711,40 @@ public final class ManualAgentApplication {
             subagentBackgroundScheduler.close();
             parentBashTool.close();
             subagentBashTool.close();
+            githubMcpClient.close();
             gitMcpClient.close();
             client.close();
             scanner.close();
+        }
+    }
+
+    /**
+     * 初始化一个 MCP Client，发现其工具并注册到指定工具表。
+     *
+     * @param toolRegistry 接收 MCP 工具的 Agent 工具表
+     * @param client       本地或远程 MCP 客户端
+     * @param namespace    模型侧使用的 MCP Server 命名空间
+     */
+    private static void registerMcpTools(
+            ToolRegistry toolRegistry,
+            McpToolClient client,
+            String namespace
+    ) {
+        // 先完成握手，确保后续 tools/list 和 tools/call 都在有效 MCP 会话中执行。
+        client.initialize();
+
+        // 服务端动态返回工具定义，宿主只负责增加命名空间并注册适配器。
+        List<McpSchema.Tool> tools =
+                client.listTools();
+
+        for (McpSchema.Tool tool : tools) {
+            toolRegistry.register(
+                    new McpAgentTool(
+                            client,
+                            namespace,
+                            tool
+                    )
+            );
         }
     }
 }

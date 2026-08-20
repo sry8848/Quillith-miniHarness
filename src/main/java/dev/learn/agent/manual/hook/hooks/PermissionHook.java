@@ -51,6 +51,13 @@ public final class PermissionHook implements AgentHook {
             "mcp__git__";
 
     /*
+     * 远程 GitHub MCP 工具使用独立命名空间，
+     * 便于权限规则区分本地仓库操作和远程 GitHub 访问。
+     */
+    private static final String MCP_GITHUB_TOOL_PREFIX =
+            "mcp__github__";
+
+    /*
      * 官方 Git Server 当前明确提供的只读工具。
      * 未列出的 Git MCP 工具默认走人工确认，避免新工具悄悄获得写权限。
      */
@@ -114,6 +121,10 @@ public final class PermissionHook implements AgentHook {
          * beforeToolUse 只负责分发，
          * 具体规则分别放在对应的权限方法中。
          */
+        if (toolCall.name().startsWith(MCP_GITHUB_TOOL_PREFIX)) {
+            return checkGitHubMcpPermission(toolCall);
+        }
+
         if (toolCall.name().startsWith(MCP_GIT_TOOL_PREFIX)) {
             return checkGitMcpPermission(toolCall);
         }
@@ -157,6 +168,25 @@ public final class PermissionHook implements AgentHook {
 
         return askUser(
                 "Git MCP 工具可能修改仓库",
+                toolCall.name(),
+                toolCall.input()
+        );
+    }
+
+    /**
+     * 检查远程 GitHub MCP 工具权限。
+     *
+     * <p>远程工具名称会随 GitHub 工具集和 Token 权限变化，
+     * 因此这里不维护具体工具白名单，而是统一要求用户确认远程访问。</p>
+     *
+     * @param toolCall 带有 mcp__github__ 命名空间的工具调用
+     * @return 用户确认后放行，否则阻止远程请求
+     */
+    private HookEffect checkGitHubMcpPermission(
+            ToolCall toolCall
+    ) {
+        return askUser(
+                "GitHub MCP 工具将访问远程 GitHub",
                 toolCall.name(),
                 toolCall.input()
         );

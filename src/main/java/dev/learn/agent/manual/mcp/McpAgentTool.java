@@ -20,21 +20,20 @@ import java.util.stream.Collectors;
 /**
  * 把 MCP Server 发现的一个远程工具包装成手写 Agent 可以注册的 {@link AgentTool}。
  *
- * <p>模型看到的是 {@code mcp__git__<tool>}，实际调用仍使用 MCP Server 返回的原始工具名。
+ * <p>模型看到的是带 MCP 命名空间的工具名，实际调用仍使用 MCP Server 返回的原始工具名。
  * 这层适配同时负责 Anthropic 工具定义、JSON 参数转换和 MCP 结果转换。</p>
  */
 public final class McpAgentTool implements AgentTool {
-
-    // 给模型侧工具名增加固定命名空间，避免和本地工具或未来其他 MCP Server 冲突。
-    private static final String TOOL_NAME_PREFIX =
-            "mcp__git__";
 
     // 复用 Jackson 把模型输入 JsonNode 转为 MCP SDK 需要的普通 Map。
     private static final ObjectMapper ARGUMENT_MAPPER =
             new ObjectMapper();
 
-    // 保存同一个远程客户端，所有 Git 工具共享一个 MCP 会话和子进程。
-    private final GitMcpClient client;
+    // 保存同一个 MCP 客户端，所有属于该 Server 的工具共享一个 MCP 会话。
+    private final McpToolClient client;
+
+    // 保存模型侧的命名空间前缀，用于区分本地 Git 和远程 GitHub 工具。
+    private final String toolNamePrefix;
 
     // 保存服务端原始名称，调用 MCP 时不能使用模型侧前缀名称。
     private final String remoteToolName;
@@ -45,18 +44,28 @@ public final class McpAgentTool implements AgentTool {
     /**
      * 创建一个 MCP AgentTool 适配器。
      *
-     * @param client 已配置 Git Server 的 MCP Client
+     * @param client 已配置 MCP Server 的客户端
+     * @param namespace 模型侧使用的 Server 命名空间，例如 git 或 github
      * @param remoteTool tools/list 返回的远程工具定义
      */
     public McpAgentTool(
-            GitMcpClient client,
+            McpToolClient client,
+            String namespace,
             McpSchema.Tool remoteTool
     ) {
         this.client =
                 Objects.requireNonNull(
                         client,
-                        "GitMcpClient 不能为空"
+                        "MCP 客户端不能为空"
                 );
+
+        this.toolNamePrefix =
+                "mcp__"
+                        + Objects.requireNonNull(
+                                namespace,
+                                "MCP 命名空间不能为空"
+                        )
+                        + "__";
 
         Objects.requireNonNull(
                 remoteTool,
@@ -74,7 +83,7 @@ public final class McpAgentTool implements AgentTool {
     }
 
     /**
-     * 返回带 mcp__git__ 命名空间的模型工具定义。
+     * 返回带 MCP Server 命名空间的模型工具定义。
      *
      * @return Anthropic 工具定义
      */
@@ -133,7 +142,7 @@ public final class McpAgentTool implements AgentTool {
     /**
      * 把 MCP 工具定义转换成 Anthropic 工具定义。
      */
-    private static Tool createDefinition(
+    private Tool createDefinition(
             McpSchema.Tool remoteTool
     ) {
         Map<String, Object> inputSchema =
@@ -154,7 +163,7 @@ public final class McpAgentTool implements AgentTool {
         }
 
         String exposedName =
-                TOOL_NAME_PREFIX
+                toolNamePrefix
                         + remoteTool.name();
 
         String description =
