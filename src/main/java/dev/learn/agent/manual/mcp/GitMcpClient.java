@@ -42,19 +42,19 @@ public final class GitMcpClient implements McpToolClient {
      * <p>构造对象不会立即启动子进程；真正的进程启动发生在首次调用 {@link #initialize()} 时，
      * 这样生命周期仍然由 initialize/close 两个明确动作控制。</p>
      *
-     * @param workspace 允许 Git MCP Server 操作的工作区
+     * @param repository 允许 Git MCP Server 操作的 Git 仓库根目录
      */
     public GitMcpClient(
-            Path workspace
+            Path repository
     ) {
         Objects.requireNonNull(
-                workspace,
-                "MCP 工作区不能为空"
+                repository,
+                "MCP Git 仓库不能为空"
         );
 
-        // 把主机侧工作区固定传给 server，避免模型选择任意 MCP Server 或任意根目录。
-        Path repository =
-                workspace.toAbsolutePath()
+        // 把已经发现的仓库根目录固定传给 server，避免模型选择任意根目录。
+        Path repositoryPath =
+                repository.toAbsolutePath()
                         .normalize();
 
         ServerParameters parameters =
@@ -64,7 +64,7 @@ public final class GitMcpClient implements McpToolClient {
                         .args(
                                 GIT_SERVER_PACKAGE,
                                 "--repository",
-                                repository.toString()
+                                repositoryPath.toString()
                         )
                         .build();
 

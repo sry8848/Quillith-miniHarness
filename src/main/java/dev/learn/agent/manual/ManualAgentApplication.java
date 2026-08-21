@@ -34,6 +34,7 @@ import dev.learn.agent.manual.systemprompt.WorkspaceSystemPromptProvider;
 import dev.learn.agent.manual.task.TaskStore;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.tools.*;
+import dev.learn.agent.manual.utils.GitRepositoryResolver;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import dev.learn.agent.manual.tool.entity.TodoState;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -87,14 +88,21 @@ public final class ManualAgentApplication {
     public static void main(
             String[] args
     ) throws IOException {
-        Path workspace =
+        Path cwd =
                 Path.of("")
                         .toRealPath();
+
+        // Git 负责从当前工作目录向上发现仓库根目录，文件工作区本身不随之扩大。
+        Path gitRoot =
+                GitRepositoryResolver.findRoot(
+                        cwd
+                );
 
         // 保存 System Prompt Provider 当前能够读取的真实程序状态。
         RuntimeContext runtimeContext =
                 new RuntimeContext(
-                        workspace
+                        cwd,
+                        gitRoot
                 );
 
         Path bashExecutable =
@@ -133,7 +141,7 @@ public final class ManualAgentApplication {
          */
         WorkspacePathResolver paths =
                 new WorkspacePathResolver(
-                        workspace
+                        cwd
                 );
 
         /*
@@ -144,7 +152,7 @@ public final class ManualAgentApplication {
          */
         SkillRegistry skillRegistry =
                 new SkillRegistry(
-                        workspace.resolve(
+                        cwd.resolve(
                                 "skills"
                         )
                 );
@@ -179,7 +187,7 @@ public final class ManualAgentApplication {
 
         BashTool parentBashTool =
                 new BashTool(
-                        workspace,
+                        cwd,
                         bashExecutable,
                         parentBackgroundScheduler
                 );
@@ -189,7 +197,7 @@ public final class ManualAgentApplication {
 
         BashTool subagentBashTool =
                 new BashTool(
-                        workspace,
+                        cwd,
                         bashExecutable,
                         subagentBackgroundScheduler
                 );
@@ -261,7 +269,7 @@ public final class ManualAgentApplication {
          */
         GitMcpClient gitMcpClient =
                 new GitMcpClient(
-                        workspace
+                        gitRoot
                 );
 
         GitHubMcpClient githubMcpClient =
@@ -335,7 +343,7 @@ public final class ManualAgentApplication {
 
         hookRegistry.registerAll(
                 new WorkspaceLoggingHook(
-                        workspace
+                        cwd
                 ),
                 toolLoggingHook,
                 permissionHook,

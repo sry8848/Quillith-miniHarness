@@ -33,7 +33,7 @@ public final class WorkspaceSystemPromptProvider
     }
 
     /**
-     * 从 RuntimeContext 派生模型需要看到的工作目录。
+     * 从 RuntimeContext 派生模型需要看到的工作目录和 Git 仓库目录。
      */
     @Override
     public Optional<String> load(
@@ -41,7 +41,9 @@ public final class WorkspaceSystemPromptProvider
     ) {
         return Optional.of(
                 "当前工作目录："
-                        + runtimeContext.workspace()
+                        + runtimeContext.cwd()
+                        + "\nGit 仓库根目录："
+                        + runtimeContext.gitRoot()
         );
     }
 }
