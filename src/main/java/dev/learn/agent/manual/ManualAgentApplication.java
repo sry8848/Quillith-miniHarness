@@ -25,6 +25,7 @@ import dev.learn.agent.manual.memory.MemoryExtractor;
 import dev.learn.agent.manual.memory.MemoryRecallService;
 import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemorySelector;
+import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.systemprompt.IdentitySystemPromptProvider;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
@@ -44,6 +45,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
+import java.util.UUID;
 
 /**
  * 手写 Java Coding Agent 的程序入口。
@@ -446,6 +448,30 @@ public final class ManualAgentApplication {
                 );
 
         /*
+         * 父子 Agent 使用同一个应用会话标识，
+         * 但分别持有打印器，因此可以共享原始文件根目录并保持不同终端策略。
+         */
+        String streamOutputSessionId =
+                UUID.randomUUID()
+                        .toString();
+
+        StreamOutputPrinter subagentOutputPrinter =
+                new StreamOutputPrinter(
+                        paths,
+                        StreamOutputPrinter.silentTerminal(),
+                        streamOutputSessionId,
+                        "subagent"
+                );
+
+        StreamOutputPrinter parentOutputPrinter =
+                new StreamOutputPrinter(
+                        paths,
+                        System.out,
+                        streamOutputSessionId,
+                        "parent"
+                );
+
+        /*
          * 子 Agent 只注册自己真实拥有的身份和工作区说明。
          * 它没有 todo_write、load_skill 和 task，不加载对应能力说明。
          */
@@ -473,6 +499,7 @@ public final class ManualAgentApplication {
                         subagentToolRegistry,
                         subagentHookRegistry,
                         contextManager,
+                        subagentOutputPrinter,
                         subagentBackgroundScheduler,
                         MAX_SUBAGENT_MODEL_ROUNDS
                 );
@@ -518,6 +545,7 @@ public final class ManualAgentApplication {
                         toolRegistry,
                         hookRegistry,
                         contextManager,
+                        parentOutputPrinter,
                         parentBackgroundScheduler,
                         MAX_PARENT_MODEL_ROUNDS
                 );
@@ -631,28 +659,11 @@ public final class ManualAgentApplication {
                                 history
                         );
 
-                /*
-                 * [核心] 文本增量到达时立即展示并刷新终端，
-                 * 完整响应仍由 AgentLoop 累积后写入历史。
-                 */
-                System.out.print(
-                        "模型："
-                );
-
+                // AgentLoop 通过父 Agent 打印器展示文本、thinking、工具调用和工具结果。
                 agentLoop.run(
                         history,
-                        recalledMemories,
-                        text -> {
-                            System.out.print(
-                                    text
-                            );
-
-                            System.out.flush();
-                        }
+                        recalledMemories
                 );
-
-                // 当前回答流结束后换行，避免后续记忆状态紧跟正文末尾。
-                System.out.println();
 
                 // [核心] 把压缩前消息转换为提取器需要的纯文本对话。
                 String extractionDialogue =

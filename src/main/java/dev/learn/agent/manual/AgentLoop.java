@@ -17,6 +17,7 @@ import com.anthropic.models.messages.RawContentBlockDelta;
 import com.anthropic.models.messages.RawContentBlockStartEvent;
 import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.StopReason;
+import com.anthropic.models.messages.ThinkingBlockParam;
 import com.anthropic.models.messages.TextBlockParam;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUseBlock;
@@ -27,6 +28,8 @@ import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
+import dev.learn.agent.manual.output.ParsedEvent;
+import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
@@ -45,7 +48,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Consumer;
 
 /**
  * 手写 Agent 的模型调用和工具执行循环。
@@ -66,6 +68,11 @@ public final class AgentLoop {
     // 定义单次模型响应允许生成的最大 token 数。
     private static final long MAX_OUTPUT_TOKENS =
             64_000;
+
+    // 定义每次模型请求允许生成的 thinking 预算。
+    // 设计意图：启用固定 thinking 内容并保持普通输出仍有充足的生成空间。
+    private static final long THINKING_BUDGET_TOKENS =
+            8_192;
 
     // 定义同一任务因输出截断而允许续写的最大次数。
     private static final int MAX_OUTPUT_CONTINUATIONS =
@@ -116,6 +123,10 @@ public final class AgentLoop {
     // 设计意图：共用同一个管理器，保证工具结果文件、会话摘要和压缩策略属于同一次应用会话。
     private final ContextManager contextManager;
 
+    // 保存模型流、工具调用和工具结果共用的输出观察边界。
+    // 设计意图：父 Agent 和子 Agent 通过不同打印器实现不同终端策略，但保留同一解析流程。
+    private final StreamOutputPrinter outputPrinter;
+
     // 保存 Agent 主循环允许执行的最大模型轮次。
     // 设计意图：只限制模型持续请求工具的业务轮次，不统计摘要请求和恢复重试，也不作为 API 计费上限。
     private final int maxModelRounds;
@@ -130,6 +141,7 @@ public final class AgentLoop {
      * @param toolRegistry 工具注册表
      * @param hookRegistry Hook 注册表
      * @param contextManager 上下文治理管理器
+     * @param outputPrinter 当前 Agent 的流式输出打印器
      * @param backgroundScheduler 当前 AgentLoop 的后台调度器
      * @param maxModelRounds 最大业务模型轮次
      * @throws NullPointerException 任一对象依赖为 null 时抛出
@@ -143,6 +155,7 @@ public final class AgentLoop {
             ToolRegistry toolRegistry,
             HookRegistry hookRegistry,
             ContextManager contextManager,
+            StreamOutputPrinter outputPrinter,
             BackgroundTaskScheduler backgroundScheduler,
             int maxModelRounds
     ) {
@@ -202,6 +215,13 @@ public final class AgentLoop {
                         "ContextManager 不能为空"
                 );
 
+        // 保存当前 Agent 的输出边界，模型解析不再依赖普通文本 Consumer。
+        this.outputPrinter =
+                Objects.requireNonNull(
+                        outputPrinter,
+                        "StreamOutputPrinter 不能为空"
+                );
+
         // 校验主循环轮次下限。
         // 设计意图：无效上限在构造边界立即失败，避免创建永远无法执行的 AgentLoop。
         if (maxModelRounds <= 0) {
@@ -221,26 +241,17 @@ public final class AgentLoop {
      *
      * @param messages 可修改的会话消息历史
      * @param turnContext 只进入本轮模型请求、不写入会话历史的临时上下文
-     * @param textOutput 实时接收模型文本增量的输出边界
      * @return 当前任务最终 assistant 回复中的文本结论
      */
     public String run(
             List<MessageParam> messages,
-            String turnContext,
-            Consumer<String> textOutput
+            String turnContext
     ) {
         // 校验本轮临时上下文已由调用方明确提供。
         // 设计意图：区分“没有召回记忆”和“集成代码遗漏参数”，让契约错误在调用边界暴露。
         Objects.requireNonNull(
                 turnContext,
                 "turnContext 不能为 null"
-        );
-
-        // 校验实时文本输出边界已由调用方提供。
-        // 设计意图：输出策略交给调用方，使父 Agent 可以展示文本、子 Agent 可以静默消费。
-        Objects.requireNonNull(
-                textOutput,
-                "textOutput 不能为 null"
         );
 
         // 刷新本轮以及更短生命周期的 System Prompt Item。
@@ -354,8 +365,7 @@ public final class AgentLoop {
                 turn =
                         requestModel(
                                 messages,
-                                turnContext,
-                                textOutput
+                                turnContext
                         );
 
                 // 根据完整工具调用列表判断本轮是否需要执行工具协议。
@@ -424,7 +434,7 @@ public final class AgentLoop {
 
                     // 把截断错误追加到实时输出。
                     // 设计意图：正文已经流式展示，只追加错误可以避免重复打印完整正文。
-                    textOutput.accept(
+                    outputPrinter.printLocalMessage(
                             "\n\n" + error
                     );
 
@@ -581,7 +591,7 @@ public final class AgentLoop {
 
         // 把业务轮次耗尽错误发送到实时输出边界。
         // 设计意图：主循环耗尽后不会再有模型文本，需要由本地流程明确告知用户。
-        textOutput.accept(
+        outputPrinter.printLocalMessage(
                 "\n\n" + error
         );
 
@@ -598,13 +608,11 @@ public final class AgentLoop {
      *
      * @param messages 当前真实会话历史
      * @param turnContext 只进入本轮请求的临时上下文
-     * @param textOutput 实时接收模型文本增量的输出边界
      * @return 主模型响应
      */
     private StreamTurn requestModel(
             List<MessageParam> messages,
-            String turnContext,
-            Consumer<String> textOutput
+            String turnContext
     ) {
         // 首次发送当前主模型请求。
         try {
@@ -612,8 +620,7 @@ public final class AgentLoop {
                     createRequest(
                             messages,
                             turnContext
-                    ),
-                    textOutput
+                    )
             );
         } catch (BadRequestException exception) {
             // 判断 HTTP 400 是否为已经确认的输入上下文超限错误。
@@ -646,8 +653,7 @@ public final class AgentLoop {
                     createRequest(
                             messages,
                             turnContext
-                    ),
-                    textOutput
+                    )
             );
         }
     }
@@ -659,12 +665,10 @@ public final class AgentLoop {
      * 尚未收到 content_block_stop 的当前块不会进入结果。
      *
      * @param request 已构造完成的模型请求
-     * @param textOutput 实时接收模型文本增量的输出边界
      * @return 本次模型流可安全进入历史的内容和工具执行
      */
     private StreamTurn createStreamingTurn(
-            MessageCreateParams request,
-            Consumer<String> textOutput
+            MessageCreateParams request
     ) {
         // 初始化已经收到 content_block_stop 的稳定 assistant 内容列表。
         List<ContentBlockParam> assistantContent =
@@ -687,6 +691,10 @@ public final class AgentLoop {
         StringBuilder currentContent =
                 null;
 
+        // 初始化 thinking 块的签名增量缓冲区，文本和签名必须分别保存。
+        StringBuilder currentThinkingSignature =
+                null;
+
         // 初始化是否已经收到 message_stop 的状态。
         boolean messageStopped =
                 false;
@@ -694,6 +702,10 @@ public final class AgentLoop {
         // 初始化本次响应是否达到模型输出上限的状态。
         boolean reachedOutputLimit =
                 false;
+
+        // 为当前真实模型请求建立独立原始追踪文件。
+        // 设计意图：流中断时已经收到的每个原始事件仍然可以被完整恢复。
+        outputPrinter.beginRequest();
 
         // 创建当前模型流的前台顺序调度和后台任务分流边界。
         // 设计意图：后台调用不进入前台依赖链，但仍复用同一个工具执行管线。
@@ -724,6 +736,11 @@ public final class AgentLoop {
                         RawMessageStreamEvent event =
                                 events.next();
 
+                        // 先保存原始事件，再进入具体协议解析，避免解析异常丢失已收到的信息。
+                        outputPrinter.recordRawEvent(
+                                event
+                        );
+
                         // 在 content_block_start 到达时初始化当前内容块。
                         if (event.isContentBlockStart()) {
                             // 保存新开始的内容块类型和初始数据。
@@ -731,16 +748,51 @@ public final class AgentLoop {
                                     event.asContentBlockStart()
                                             .contentBlock();
 
-                            // 根据文本或工具调用类型初始化当前内容缓冲区。
+                            // 根据文本、thinking 或工具调用类型初始化当前内容缓冲区。
                             if (currentBlock.isText()) {
+                                // 保存文本起始块中的初始内容，并处理可能已经返回的非空文本。
+                                String initialText =
+                                        currentBlock.asText()
+                                                .text();
                                 currentContent =
                                         new StringBuilder(
-                                                currentBlock.asText()
-                                                        .text()
+                                                initialText
                                         );
+                                currentThinkingSignature =
+                                        null;
+                                if (!initialText.isEmpty()) {
+                                    outputPrinter.print(
+                                            ParsedEvent.textDelta(
+                                                    initialText
+                                            )
+                                    );
+                                }
+                            } else if (currentBlock.isThinking()) {
+                                // 保存 thinking 起始块中的文本和签名初始值。
+                                String initialThinking =
+                                        currentBlock.asThinking()
+                                                .thinking();
+                                currentContent =
+                                        new StringBuilder(
+                                                initialThinking
+                                        );
+                                currentThinkingSignature =
+                                        new StringBuilder(
+                                                currentBlock.asThinking()
+                                                        .signature()
+                                        );
+                                if (!initialThinking.isEmpty()) {
+                                    outputPrinter.print(
+                                            ParsedEvent.thinkingDelta(
+                                                    initialThinking
+                                            )
+                                    );
+                                }
                             } else if (currentBlock.isToolUse()) {
                                 currentContent =
                                         new StringBuilder();
+                                currentThinkingSignature =
+                                        null;
                             } else {
                                 throw new IllegalStateException(
                                         "Unsupported streamed content block: "
@@ -759,7 +811,7 @@ public final class AgentLoop {
                                     event.asContentBlockDelta()
                                             .delta();
 
-                            // 根据文本或工具 JSON 类型处理当前增量。
+                            // 根据文本、thinking、签名或工具 JSON 类型处理当前增量。
                             if (delta.isText()) {
                                 // 读取本次文本增量。
                                 String text =
@@ -771,10 +823,33 @@ public final class AgentLoop {
                                         text
                                 );
 
-                                // 把正文增量立即发送到实时输出边界。
+                                // 把正文增量转换为打印事件并立即展示。
                                 // 设计意图：正文需要即时展示，工具 JSON 则只在内存中累积。
-                                textOutput.accept(
-                                        text
+                                outputPrinter.print(
+                                        ParsedEvent.textDelta(
+                                                text
+                                        )
+                                );
+                            } else if (delta.isThinking()) {
+                                // 读取并累积 thinking 文本增量。
+                                String thinking =
+                                        delta.asThinking()
+                                                .thinking();
+                                currentContent.append(
+                                        thinking
+                                );
+
+                                // thinking 与普通文本一样按增量完整展示。
+                                outputPrinter.print(
+                                        ParsedEvent.thinkingDelta(
+                                                thinking
+                                        )
+                                );
+                            } else if (delta.isSignature()) {
+                                // 签名只进入当前 thinking 块，不作为可读文本打印。
+                                currentThinkingSignature.append(
+                                        delta.asSignature()
+                                                .signature()
                                 );
                             } else if (delta.isInputJson()) {
                                 currentContent.append(
@@ -794,7 +869,7 @@ public final class AgentLoop {
 
                         // 在 content_block_stop 到达时提交当前完整内容块。
                         if (event.isContentBlockStop()) {
-                            // 根据当前块是文本还是工具调用生成稳定内容。
+                            // 根据当前块是文本、thinking 还是工具调用生成稳定内容。
                             if (currentBlock.isText()) {
                                 // 读取已经完整关闭的文本块内容。
                                 String text =
@@ -810,6 +885,23 @@ public final class AgentLoop {
                                 // 把完整文本加入最终返回值候选列表。
                                 completedText.add(
                                         text
+                                );
+                            } else if (currentBlock.isThinking()) {
+                                // 使用完整 thinking 文本和签名构造可回传的 assistant 内容块。
+                                ThinkingBlockParam thinkingBlock =
+                                        ThinkingBlockParam.builder()
+                                                .thinking(
+                                                        currentContent.toString()
+                                                )
+                                                .signature(
+                                                        currentThinkingSignature
+                                                                .toString()
+                                                )
+                                                .build();
+                                assistantContent.add(
+                                        ContentBlockParam.ofThinking(
+                                                thinkingBlock
+                                        )
                                 );
                             } else {
                                 // 读取 content_block_start 中保存的工具调用元数据。
@@ -853,6 +945,13 @@ public final class AgentLoop {
                                                         )
                                                 )
                                                 .build();
+
+                                // 工具调用必须先展示，再提交执行任务，保证终端调用顺序先于结果顺序。
+                                outputPrinter.print(
+                                        ParsedEvent.toolCallCompleted(
+                                                completedTool
+                                        )
+                                );
 
                                 // 对合法输入按执行模式分流，对非法输入直接创建失败结果。
                                 CompletableFuture<ToolExecutionResult> future;
@@ -901,6 +1000,10 @@ public final class AgentLoop {
                             currentContent =
                                     null;
 
+                            // 清除已经关闭 thinking 块的签名缓冲区。
+                            currentThinkingSignature =
+                                    null;
+
                             // 当前完整块已提交，继续读取下一个流事件。
                             continue;
                         }
@@ -927,6 +1030,9 @@ public final class AgentLoop {
                         if (event.isMessageStop()) {
                             messageStopped =
                                     true;
+                            outputPrinter.print(
+                                    ParsedEvent.messageStopped()
+                            );
                         }
                     }
                 }
@@ -939,7 +1045,6 @@ public final class AgentLoop {
                             assistantContent,
                             completedText,
                             toolExecutions,
-                            textOutput,
                             new AnthropicInvalidDataException(
                                     "Stream ended before the current message completed"
                             )
@@ -969,10 +1074,12 @@ public final class AgentLoop {
                         assistantContent,
                         completedText,
                         toolExecutions,
-                        textOutput,
                         exception
                 );
             }
+        } finally {
+            // 模型流结束后请求关闭；存在工具调用时由最后一个工具结果完成实际关闭。
+            outputPrinter.finishRequest();
         }
     }
 
@@ -982,7 +1089,6 @@ public final class AgentLoop {
      * @param assistantContent 已经完整关闭的 assistant 内容块
      * @param completedText 已经完整关闭的文本块
      * @param toolExecutions 已经启动的工具调用
-     * @param textOutput 用户可见输出边界
      * @param cause 流中断原因
      * @return 不包含当前未关闭内容块的中断结果
      */
@@ -990,7 +1096,6 @@ public final class AgentLoop {
             List<ContentBlockParam> assistantContent,
             List<String> completedText,
             List<PendingToolExecution> toolExecutions,
-            Consumer<String> textOutput,
             RuntimeException cause
     ) {
         // 记录流中断原因以及已经保留的稳定内容数量。
@@ -1004,7 +1109,7 @@ public final class AgentLoop {
 
         // 在实时输出中提示最后一个未完成内容块已经丢弃。
         // 设计意图：未关闭文本可能已经显示但不会进入协议历史，提示可避免用户误判恢复起点。
-        textOutput.accept(
+        outputPrinter.printLocalMessage(
                 "\n\n[响应流中断：最后未完成的内容块未保存，"
                         + "将从已完成内容继续]\n\n"
         );
@@ -1192,6 +1297,15 @@ public final class AgentLoop {
             ToolExecutionResult result =
                     execution.resultFuture()
                             .join();
+
+            // 在应用上下文预算前展示和保存完整原始工具结果。
+            // 设计意图：终端截断只影响展示，不应改变落盘和模型协议使用的原始结果。
+            outputPrinter.print(
+                    ParsedEvent.toolResult(
+                            execution.toolUse(),
+                            result
+                    )
+            );
 
             // 把内部工具结果封装为 Anthropic tool_result。
             ToolResultBlockParam toolResult =
@@ -1400,6 +1514,9 @@ public final class AgentLoop {
                 MessageCreateParams.builder()
                         .model(model)
                         .maxTokens(MAX_OUTPUT_TOKENS)
+                        .enabledThinking(
+                                THINKING_BUDGET_TOKENS
+                        )
                         .system(
                                 systemPrompt.content()
                         )

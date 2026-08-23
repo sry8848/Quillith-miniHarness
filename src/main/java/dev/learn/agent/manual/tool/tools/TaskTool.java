@@ -130,7 +130,7 @@ public final class TaskTool implements AgentTool {
          * 当前版本同步执行：
          * 子 Agent 完成前，父 Agent 会一直等待。
          *
-         * 子 Agent 的中间文本不直接进入父终端；
+         * 子 Agent 的中间文本由静默 StreamOutputPrinter 接收，不直接进入父终端；
          * 完整结论仍通过 task 的 tool_result 返回父 Agent。
          *
          * 异步执行和后台通知属于 s13，
@@ -139,9 +139,7 @@ public final class TaskTool implements AgentTool {
         String conclusion =
                 subagentLoop.run(
                         subagentMessages,
-                        "",
-                        ignored -> {
-                        }
+                        ""
                 );
 
         System.out.println(
