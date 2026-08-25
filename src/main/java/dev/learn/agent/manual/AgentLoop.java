@@ -28,7 +28,6 @@ import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
-import dev.learn.agent.manual.output.ParsedEvent;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.RuntimeContext;
@@ -703,10 +702,6 @@ public final class AgentLoop {
         boolean reachedOutputLimit =
                 false;
 
-        // 为当前真实模型请求建立独立原始追踪文件。
-        // 设计意图：流中断时已经收到的每个原始事件仍然可以被完整恢复。
-        outputPrinter.beginRequest();
-
         // 创建当前模型流的前台顺序调度和后台任务分流边界。
         // 设计意图：后台调用不进入前台依赖链，但仍复用同一个工具执行管线。
         try (ToolCallDispatcher toolDispatcher =
@@ -736,11 +731,6 @@ public final class AgentLoop {
                         RawMessageStreamEvent event =
                                 events.next();
 
-                        // 先保存原始事件，再进入具体协议解析，避免解析异常丢失已收到的信息。
-                        outputPrinter.recordRawEvent(
-                                event
-                        );
-
                         // 在 content_block_start 到达时初始化当前内容块。
                         if (event.isContentBlockStart()) {
                             // 保存新开始的内容块类型和初始数据。
@@ -760,11 +750,10 @@ public final class AgentLoop {
                                         );
                                 currentThinkingSignature =
                                         null;
+                                outputPrinter.startTextBlock();
                                 if (!initialText.isEmpty()) {
-                                    outputPrinter.print(
-                                            ParsedEvent.textDelta(
-                                                    initialText
-                                            )
+                                    outputPrinter.printTextDelta(
+                                            initialText
                                     );
                                 }
                             } else if (currentBlock.isThinking()) {
@@ -781,11 +770,10 @@ public final class AgentLoop {
                                                 currentBlock.asThinking()
                                                         .signature()
                                         );
+                                outputPrinter.startThinkingBlock();
                                 if (!initialThinking.isEmpty()) {
-                                    outputPrinter.print(
-                                            ParsedEvent.thinkingDelta(
-                                                    initialThinking
-                                            )
+                                    outputPrinter.printThinkingDelta(
+                                            initialThinking
                                     );
                                 }
                             } else if (currentBlock.isToolUse()) {
@@ -823,12 +811,10 @@ public final class AgentLoop {
                                         text
                                 );
 
-                                // 把正文增量转换为打印事件并立即展示。
-                                // 设计意图：正文需要即时展示，工具 JSON 则只在内存中累积。
-                                outputPrinter.print(
-                                        ParsedEvent.textDelta(
-                                                text
-                                        )
+                                // 把正文增量立即展示，工具 JSON 则只在内存中累积。
+                                // 设计意图：正文需要即时展示，半截工具 JSON 不具备可读性。
+                                outputPrinter.printTextDelta(
+                                        text
                                 );
                             } else if (delta.isThinking()) {
                                 // 读取并累积 thinking 文本增量。
@@ -840,10 +826,8 @@ public final class AgentLoop {
                                 );
 
                                 // thinking 与普通文本一样按增量完整展示。
-                                outputPrinter.print(
-                                        ParsedEvent.thinkingDelta(
-                                                thinking
-                                        )
+                                outputPrinter.printThinkingDelta(
+                                        thinking
                                 );
                             } else if (delta.isSignature()) {
                                 // 签名只进入当前 thinking 块，不作为可读文本打印。
@@ -947,10 +931,8 @@ public final class AgentLoop {
                                                 .build();
 
                                 // 工具调用必须先展示，再提交执行任务，保证终端调用顺序先于结果顺序。
-                                outputPrinter.print(
-                                        ParsedEvent.toolCallCompleted(
-                                                completedTool
-                                        )
+                                outputPrinter.printToolCall(
+                                        completedTool
                                 );
 
                                 // 对合法输入按执行模式分流，对非法输入直接创建失败结果。
@@ -1030,9 +1012,6 @@ public final class AgentLoop {
                         if (event.isMessageStop()) {
                             messageStopped =
                                     true;
-                            outputPrinter.print(
-                                    ParsedEvent.messageStopped()
-                            );
                         }
                     }
                 }
@@ -1077,9 +1056,6 @@ public final class AgentLoop {
                         exception
                 );
             }
-        } finally {
-            // 模型流结束后请求关闭；存在工具调用时由最后一个工具结果完成实际关闭。
-            outputPrinter.finishRequest();
         }
     }
 
@@ -1298,13 +1274,11 @@ public final class AgentLoop {
                     execution.resultFuture()
                             .join();
 
-            // 在应用上下文预算前展示和保存完整原始工具结果。
-            // 设计意图：终端截断只影响展示，不应改变落盘和模型协议使用的原始结果。
-            outputPrinter.print(
-                    ParsedEvent.toolResult(
-                            execution.toolUse(),
-                            result
-                    )
+            // 在应用上下文预算前展示完整工具结果。
+            // 设计意图：终端截断只影响展示，不应改变模型协议使用的原始结果。
+            outputPrinter.printToolResult(
+                    execution.toolUse(),
+                    result
             );
 
             // 把内部工具结果封装为 Anthropic tool_result。

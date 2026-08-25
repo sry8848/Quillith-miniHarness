@@ -45,7 +45,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
-import java.util.UUID;
 
 /**
  * 手写 Java Coding Agent 的程序入口。
@@ -447,28 +446,15 @@ public final class ManualAgentApplication {
                         paths
                 );
 
-        /*
-         * 父子 Agent 使用同一个应用会话标识，
-         * 但分别持有打印器，因此可以共享原始文件根目录并保持不同终端策略。
-         */
-        String streamOutputSessionId =
-                UUID.randomUUID()
-                        .toString();
-
+        // 父 Agent 可见、子 Agent 静默；两者只共享输出策略，不共享终端目标。
         StreamOutputPrinter subagentOutputPrinter =
                 new StreamOutputPrinter(
-                        paths,
-                        StreamOutputPrinter.silentTerminal(),
-                        streamOutputSessionId,
-                        "subagent"
+                        StreamOutputPrinter.silentTerminal()
                 );
 
         StreamOutputPrinter parentOutputPrinter =
                 new StreamOutputPrinter(
-                        paths,
-                        System.out,
-                        streamOutputSessionId,
-                        "parent"
+                        System.out
                 );
 
         /*
