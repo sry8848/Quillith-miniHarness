@@ -1124,96 +1124,12 @@ public final class ContextManager {
     }
 
     /**
-     * 找到最近一个 API 轮次在消息历史中的起始位置。
-     *
-     * 当前 Java AgentLoop 会把一次模型响应的全部内容块
-     * 合并成一条 assistant MessageParam。
-     * 从这条 assistant 消息开始，到下一条 assistant 消息之前，
-     * 都属于同一个 API 轮次。
-     *
-     * @param messages 当前完整消息历史
-     * @return 最近一个 API 轮次的起始索引
-     * @throws IllegalStateException 没有旧历史可压缩，或调用时机不正确时抛出
-     */
-    private int findLatestApiRoundStart(
-            List<MessageParam> messages
-    ) {
-        // 恢复压缩只能处理 AgentLoop 内部维护的真实消息历史。
-        Objects.requireNonNull(
-                messages,
-                "消息历史不能为空"
-        );
-
-        // 空历史不可能造成上下文超限，出现时说明调用位置错误。
-        if (messages.isEmpty()) {
-            throw new IllegalStateException(
-                    "空消息历史不存在可恢复的 API 轮次"
-            );
-        }
-
-        /*
-         * Prompt too long 发生在发送 user 输入时。
-         *
-         * 普通提问和 tool_result 在 Anthropic Messages API 中都使用 user 角色；
-         * 如果历史以 assistant 结尾，说明当前并没有等待模型处理的新输入。
-         */
-        if (!MessageParam.Role.USER.equals(
-                messages.get(
-                                messages.size() - 1
-                        )
-                        .role()
-        )) {
-            throw new IllegalStateException(
-                    "恢复压缩要求消息历史以 user 输入结尾"
-            );
-        }
-
-        /*
-         * 从后向前寻找最近一次 assistant 响应。
-         *
-         * 它以及后面的 user/tool_result，就是本次失败请求
-         * 必须原样保留并重新发送的最新完整 API 轮次。
-         */
-        for (int index =
-             messages.size() - 1;
-             index >= 0;
-             index--) {
-            // assistant 消息标志着一次新 API 轮次的开始。
-            if (MessageParam.Role.ASSISTANT.equals(
-                    messages.get(index)
-                            .role()
-            )) {
-                /*
-                 * assistant 位于第一条时，前面没有旧历史可以摘要。
-                 * 原样保留整个轮次不会释放任何上下文，因此明确失败。
-                 */
-                if (index == 0) {
-                    throw new IllegalStateException(
-                            "没有位于最新 API 轮次之前的旧历史可压缩"
-                    );
-                }
-
-                // 返回切口，调用方将使用 [0, index) 作为摘要范围。
-                return index;
-            }
-        }
-
-        /*
-         * 没有 assistant 说明模型从未成功处理过当前会话。
-         * 此时只有首次用户输入，恢复压缩无法同时保留原文并缩小它。
-         */
-        throw new IllegalStateException(
-                "会话尚未完成过一次模型调用，没有旧 API 轮次可压缩"
-        );
-    }
-
-    /**
      * 判断当前活跃消息是否达到教学版自动压缩阈值。
      *
      * 这里只计算发送给 Messages API 的 messages 部分，
      * 不把字符数伪装成模型 Token，也不声称能够精确预测服务端限制。
      * 未被本地估算覆盖的 system prompt、工具定义和供应商差异，
-     * 后续由 Prompt too long 恢复入口兜底。
+     * 仍由 Provider 的真实请求结果决定。
      *
      * @param messages 经过低成本压缩后、准备发送给主模型的消息
      * @return 序列化字符数超过软阈值时返回 true
@@ -1305,72 +1221,9 @@ public final class ContextManager {
     }
 
     /**
-     * 从主模型的 Prompt too long 错误中恢复会话。
-     *
-     * 已经完成的旧 API 轮次被摘要；
-     * 本次失败请求依赖的最新 API 轮次保持原始消息结构，
-     * 使 AgentLoop 可以使用压缩结果重试同一个请求。
-     *
-     * 本方法只负责生成恢复后的消息，不负责捕获 API 异常或限制重试次数。
-     * “是否已经恢复过一次”属于 AgentLoop 的请求状态。
-     *
-     * @param messages 被主模型拒绝的完整活跃消息
-     * @return “旧历史摘要 + 最新原始 API 轮次”组成的不可变列表
-     */
-    public List<MessageParam> recoverFromPromptTooLong(
-            List<MessageParam> messages
-    ) {
-        /*
-         * 先确定协议安全切口，再产生 transcript 文件副作用。
-         * 没有旧轮次可压缩时应直接失败，而不是生成无效恢复记录。
-         */
-        int latestRoundStart =
-                findLatestApiRoundStart(
-                        messages
-                );
-
-        // 为存档、摘要和保留尾部建立同一份不可变消息快照。
-        List<MessageParam> messageSnapshot =
-                List.copyOf(
-                        messages
-                );
-
-        // 切口之前是已经完成、允许交给模型摘要的旧 API 轮次。
-        List<MessageParam> messagesToSummarize =
-                messageSnapshot.subList(
-                        0,
-                        latestRoundStart
-                );
-
-        /*
-         * 切口从最近 assistant 响应开始，
-         * 因此 tool_use 及其后续 tool_result 会作为一个轮次原样保留。
-         */
-        List<MessageParam> messagesToKeep =
-                messageSnapshot.subList(
-                        latestRoundStart,
-                        messageSnapshot.size()
-                );
-
-        /*
-         * 恢复摘要只负责提供理解最新轮次所需的前置背景，
-         * 不能重新解释或改写本次尚未成功处理的输入。
-         */
-        return compactMessages(
-                messageSnapshot,
-                messagesToSummarize,
-                messagesToKeep,
-                "保留理解最新 API 轮次所需的原始目标、"
-                        + "用户约束、关键决定和已完成工作。"
-        );
-    }
-
-    /**
      * 执行保存、摘要和新历史组装的共同压缩流程。
      *
-     * 正常压缩和错误恢复复用这个方法。
-     * 两条路径只决定哪些消息参与摘要、哪些消息需要原样保留，
-     * 不重复实现文件持久化和模型摘要调用。
+     * 主动压缩只通过这个方法完成文件存档、摘要和新历史组装。
      *
      * @param transcriptMessages 有损压缩前需要完整存档的消息
      * @param messagesToSummarize 交给摘要模型处理的旧消息

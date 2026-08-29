@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
  * 把 MCP Server 发现的一个远程工具包装成手写 Agent 可以注册的 {@link AgentTool}。
  *
  * <p>模型看到的是带 MCP 命名空间的工具名，实际调用仍使用 MCP Server 返回的原始工具名。
- * 这层适配同时负责 Anthropic 工具定义、JSON 参数转换和 MCP 结果转换。</p>
+ * 这个包装对象负责 Anthropic 工具定义、JSON 参数转换和 MCP 结果转换。</p>
  */
 public final class McpAgentTool implements AgentTool {
 
@@ -42,7 +42,7 @@ public final class McpAgentTool implements AgentTool {
     private final Tool definition;
 
     /**
-     * 创建一个 MCP AgentTool 适配器。
+     * 创建一个 MCP AgentTool 包装对象。
      *
      * @param client 已配置 MCP Server 的客户端
      * @param namespace 模型侧使用的 Server 命名空间，例如 git 或 github
@@ -115,7 +115,7 @@ public final class McpAgentTool implements AgentTool {
                         }
                 );
 
-        // 适配器调用远程原始名称，隔离模型侧命名空间。
+        // 使用远程原始名称调用 MCP，隔离模型侧命名空间。
         McpSchema.CallToolResult result =
                 client.callTool(
                         remoteToolName,
@@ -170,6 +170,15 @@ public final class McpAgentTool implements AgentTool {
                 remoteTool.description() == null
                         ? ""
                         : remoteTool.description();
+
+        // 只为 GitHub 仓库搜索补充模型可见的调用边界，不改变远端 Schema 和模型参数。
+        if ("mcp__github__search_repositories".equals(exposedName)) {
+            description +=
+                    "\n\n使用 GitHub 高级搜索语法限定 query，避免无组织、用户、主题或语言范围的宽泛搜索。"
+                            + "\nminimal_output 默认返回精简仓库信息；只有任务明确需要完整 Repository 对象时才设置为 false。"
+                            + "\n首次搜索优先使用较小的 perPage；候选不足时再翻页或增加数量。"
+                            + "\n查询特定仓库详情时，优先调用使用 owner 和 repo 定位的详情工具。";
+        }
 
         return ToolDefinitionFactory.create(
                 exposedName,

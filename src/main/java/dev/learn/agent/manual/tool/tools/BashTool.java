@@ -28,6 +28,9 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 使用 Git Bash 执行 Shell 命令。
+ *
+ * <p>Workspace 只是进程的初始工作目录，不是文件系统沙盒；
+ * 工具审批由 AgentLoop 外部的审批边界统一处理。</p>
  */
 public final class BashTool implements AgentTool, AutoCloseable {
 
@@ -47,7 +50,9 @@ public final class BashTool implements AgentTool, AutoCloseable {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "bash",
-                    "Run a Bash command in the workspace. "
+                    "Run a Bash command with the workspace as the initial working directory. "
+                            + "This is not a filesystem sandbox. "
+                            + "The host approval policy applies to the entire Bash call. "
                             + "Set run_in_background=true only for a command "
                             + "that may start immediately. The command result "
                             + "is delivered to this agent before its final answer.",

@@ -17,18 +17,19 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 在工作区文件中替换第一次出现的指定文本。
+ * 在可访问文件中替换第一次出现的指定文本。
  */
 public final class EditFileTool implements AgentTool {
 
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "edit_file",
-                    "Replace the first exact text occurrence in a workspace file.",
+                    "Replace the first exact text occurrence in an accessible file. "
+                            + "The host approval policy controls external writes.",
                     Map.of(
                             "path",
                             ToolDefinitionFactory.stringProperty(
-                                    "Path relative to the workspace."
+                                    "Path relative to the workspace or an accessible external path."
                             ),
                             "old_text",
                             ToolDefinitionFactory.stringProperty(
@@ -110,7 +111,7 @@ public final class EditFileTool implements AgentTool {
 
         try {
             Path file =
-                    paths.resolveExisting(
+                    paths.resolveExistingAnywhere(
                             pathText
                     );
 

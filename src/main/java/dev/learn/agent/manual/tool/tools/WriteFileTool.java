@@ -17,18 +17,19 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 在工作区内创建或覆盖 UTF-8 文本文件。
+ * 在可访问路径中创建或覆盖 UTF-8 文本文件。
  */
 public final class WriteFileTool implements AgentTool {
 
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "write_file",
-                    "Create or overwrite a UTF-8 text file in the workspace.",
+                    "Create or overwrite a UTF-8 text file at an accessible path. "
+                            + "The host approval policy controls external writes.",
                     Map.of(
                             "path",
                             ToolDefinitionFactory.stringProperty(
-                                    "Path relative to the workspace."
+                                    "Path relative to the workspace or an accessible external path."
                             ),
                             "content",
                             ToolDefinitionFactory.stringProperty(
@@ -88,7 +89,7 @@ public final class WriteFileTool implements AgentTool {
 
         try {
             Path file =
-                    paths.resolveForWrite(
+                    paths.resolveForWriteAnywhere(
                             pathText
                     );
 

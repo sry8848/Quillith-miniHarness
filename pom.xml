@@ -38,6 +38,15 @@
         <!-- 统一手写 Agent 的运行期诊断日志版本。 -->
         <slf4j.version>2.0.18</slf4j.version>
 
+        <!-- OpenTelemetry API 由业务代码读取当前 Span 并补充动态名称。 -->
+        <opentelemetry.version>1.64.0</opentelemetry.version>
+
+        <!-- 注解版本与本地使用的 OpenTelemetry Java Agent 版本保持一致。 -->
+        <opentelemetry-instrumentation.version>2.30.0</opentelemetry-instrumentation.version>
+
+        <!-- 使用成熟的双路输出流，同时保留终端显示并保存本次会话文本。 -->
+        <commons-io.version>2.22.0</commons-io.version>
+
         <!-- 固定 JUnit 5 正式版，验证并发调度契约。 -->
         <junit.version>5.14.3</junit.version>
     </properties>
@@ -93,6 +102,27 @@
             <artifactId>slf4j-simple</artifactId>
             <version>${slf4j.version}</version>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- Java Agent 启动时会把 API 调用接入真实 OpenTelemetry SDK。 -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+            <version>${opentelemetry.version}</version>
+        </dependency>
+
+        <!-- @WithSpan 用于声明 Agent、LLM 和 Tool 的方法级 Span。 -->
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-instrumentation-annotations</artifactId>
+            <version>${opentelemetry-instrumentation.version}</version>
+        </dependency>
+
+        <!-- TeeOutputStream 只负责 stdout 分流，不承载 Trace 语义。 -->
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>${commons-io.version}</version>
         </dependency>
 
         <!--

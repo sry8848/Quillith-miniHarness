@@ -17,18 +17,19 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 按 UTF-8 读取工作区中的文本文件。
+ * 按 UTF-8 读取可访问路径中的文本文件。
  */
 public final class ReadFileTool implements AgentTool {
 
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "read_file",
-                    "Read a UTF-8 text file in the workspace.",
+                    "Read a UTF-8 text file from an accessible path. "
+                            + "Reading does not require approval.",
                     Map.of(
                             "path",
                             ToolDefinitionFactory.stringProperty(
-                                    "Path relative to the workspace."
+                                    "Path relative to the workspace or an accessible external path."
                             ),
                             "limit",
                             ToolDefinitionFactory.positiveIntegerProperty(
@@ -99,7 +100,7 @@ public final class ReadFileTool implements AgentTool {
 
         try {
             Path file =
-                    paths.resolveExisting(
+                    paths.resolveExistingAnywhere(
                             pathNode.textValue()
                     );
 

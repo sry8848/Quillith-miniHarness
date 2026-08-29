@@ -1,15 +1,17 @@
 package dev.learn.agent.manual;
 
+import com.anthropic.core.JsonValue;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.models.messages.MessageParam;
+import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.hook.hooks.BackgroundTaskHook;
 import dev.learn.agent.manual.hook.hooks.LargeOutputHook;
-import dev.learn.agent.manual.hook.hooks.PermissionHook;
 import dev.learn.agent.manual.hook.hooks.SessionSummaryHook;
 import dev.learn.agent.manual.hook.hooks.TodoReminderHook;
 import dev.learn.agent.manual.hook.hooks.ToolLoggingHook;
@@ -26,6 +28,8 @@ import dev.learn.agent.manual.memory.MemoryRecallService;
 import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemorySelector;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
+import dev.learn.agent.manual.recovery.ContentRejectionRecoveryHandler;
+import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.systemprompt.IdentitySystemPromptProvider;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
@@ -34,14 +38,29 @@ import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.systemprompt.WorkspaceSystemPromptProvider;
 import dev.learn.agent.manual.task.TaskStore;
 import dev.learn.agent.manual.tool.ToolRegistry;
+import dev.learn.agent.manual.tool.approval.DefaultToolApprovalPolicy;
+import dev.learn.agent.manual.tool.approval.ToolApprovalGate;
+import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
+import dev.learn.agent.manual.tool.approval.ToolApprovalPolicy;
 import dev.learn.agent.manual.tool.tools.*;
 import dev.learn.agent.manual.utils.GitRepositoryResolver;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import dev.learn.agent.manual.tool.entity.TodoState;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.apache.commons.io.output.TeeOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
@@ -54,11 +73,25 @@ import java.util.Scanner;
  */
 public final class ManualAgentApplication {
 
+    // 记录可选 Git 能力的调试信息，不让正常的无 Git 环境污染用户终端。
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(
+                    ManualAgentApplication.class
+            );
+
     private static final String BASE_URL =
             "https://dashscope.aliyuncs.com/apps/anthropic";
 
     private static final String MODEL =
             "qwen3.5-flash";
+
+    /*
+     * 当前应用只有交互式入口，因此默认需要询问用户。
+     * 未来非交互入口应在应用装配层传入 BYPASS，
+     * 不要让审批策略自行解析命令行参数。
+     */
+    private static final ToolApprovalMode DEFAULT_APPROVAL_MODE =
+            ToolApprovalMode.ASK;
 
     /*
      * 父 Agent 负责完整任务和多次委派，
@@ -93,11 +126,77 @@ public final class ManualAgentApplication {
                 Path.of("")
                         .toRealPath();
 
-        // Git 负责从当前工作目录向上发现仓库根目录，文件工作区本身不随之扩大。
-        Path gitRoot =
-                GitRepositoryResolver.findRoot(
-                        cwd
+        // 创建本次会话的终端记录文件，并让所有现有 System.out 调用同时输出到终端和文件。
+        Path transcriptDirectory =
+                cwd.resolve(
+                        ".task_outputs"
+                ).resolve(
+                        "transcripts"
                 );
+        Files.createDirectories(
+                transcriptDirectory
+        );
+        String transcriptTimestamp =
+                DateTimeFormatter.ofPattern(
+                                "yyyyMMdd-HHmmss-SSS"
+                        ).withZone(
+                                ZoneId.systemDefault()
+                        ).format(
+                                Instant.now()
+                        );
+        Path transcriptPath =
+                transcriptDirectory.resolve(
+                        "manual-agent-"
+                                + transcriptTimestamp
+                                + ".log"
+                );
+        OutputStream transcriptFile =
+                Files.newOutputStream(
+                        transcriptPath,
+                        StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE
+                );
+        PrintStream originalTerminal =
+                System.out;
+        PrintStream sessionTerminal =
+                new PrintStream(
+                        new TeeOutputStream(
+                                originalTerminal,
+                                transcriptFile
+                        ),
+                        true,
+                        StandardCharsets.UTF_8
+                );
+        System.setOut(
+                sessionTerminal
+        );
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(
+                        sessionTerminal::close,
+                        "terminal-transcript-close"
+                )
+        );
+        System.out.println(
+                "[Terminal transcript] "
+                        + transcriptPath
+        );
+
+        // Git 是可选能力；发现失败时保留 null，后面不装配 Git MCP。
+        Path gitRoot = null;
+
+        try {
+            // Git 负责从当前工作目录向上发现仓库根目录，文件工作区本身不随之扩大。
+            gitRoot =
+                    GitRepositoryResolver.findRoot(
+                            cwd
+                    );
+        } catch (IOException exception) {
+            // 当前环境没有可用 Git 仓库时，只跳过依赖 Git 的 MCP，不阻断 Agent 启动。
+            LOGGER.debug(
+                    "未发现可用的 Git 仓库，跳过 Git MCP 注册：{}",
+                    exception.getMessage()
+            );
+        }
 
         // 保存 System Prompt Provider 当前能够读取的真实程序状态。
         RuntimeContext runtimeContext =
@@ -263,15 +362,14 @@ public final class ManualAgentApplication {
         );
 
         /*
-         * 主 Agent 在启动阶段连接本地 Git MCP 和远程 GitHub MCP，
-         * 并把两个 tools/list 返回的工具注册到同一个主工具表。
+         * 主 Agent 在启动阶段按可用能力注册本地 Git MCP 和远程 GitHub MCP。
          *
-         * MCP 工具只进入父 Agent，避免子 Agent 绕过主会话的 MCP 权限边界。
+         * Git MCP 依赖当前工作目录对应的 Git 仓库；
+         * 没有 gitRoot 时不创建、不初始化也不注册 Git MCP。
+         *
+         * MCP 工具只进入父 Agent，避免子 Agent 绕过主会话的 MCP 调用边界。
          */
-        GitMcpClient gitMcpClient =
-                new GitMcpClient(
-                        gitRoot
-                );
+        GitMcpClient gitMcpClient = null;
 
         GitHubMcpClient githubMcpClient =
                 new GitHubMcpClient(
@@ -279,21 +377,32 @@ public final class ManualAgentApplication {
                 );
 
         try {
-            registerMcpTools(
-                    toolRegistry,
-                    gitMcpClient,
-                    "git"
-            );
+            // 没有 Git 仓库时完整跳过 Git MCP 的创建、握手、工具发现和注册。
+            if (gitRoot != null) {
+                gitMcpClient =
+                        new GitMcpClient(
+                                gitRoot
+                        );
 
+                registerMcpTools(
+                        toolRegistry,
+                        gitMcpClient,
+                        "git"
+                );
+            }
+
+            // GitHub MCP 与本地 Git 无关，继续按原流程注册。
             registerMcpTools(
                     toolRegistry,
                     githubMcpClient,
                     "github"
             );
         } catch (RuntimeException exception) {
-            // 启动阶段尚未进入主循环，无法依赖下面的会话 finally，因此这里立即关闭两个 MCP 连接。
+            // 启动阶段尚未进入主循环，失败时立即关闭已经成功创建的 MCP 连接。
             githubMcpClient.close();
-            gitMcpClient.close();
+            if (gitMcpClient != null) {
+                gitMcpClient.close();
+            }
             throw exception;
         }
 
@@ -320,16 +429,22 @@ public final class ManualAgentApplication {
 
         /*
          * 父子 Agent 共用同一个终端和工作区，
-         * 因此共享工具日志、权限检查和大输出处理 Hook。
+         * 因此共享工具日志、大输出处理和审批 Gate。
          *
-         * PermissionHook 会串行化终端确认，避免并发工具同时读取 Scanner。
+         * ToolApprovalGate 会串行化终端确认，避免并发工具同时读取 Scanner。
          */
         ToolLoggingHook toolLoggingHook =
                 new ToolLoggingHook();
 
-        PermissionHook permissionHook =
-                new PermissionHook(
-                        paths,
+        ToolApprovalPolicy approvalPolicy =
+                new DefaultToolApprovalPolicy(
+                        paths
+                );
+
+        ToolApprovalGate approvalGate =
+                new ToolApprovalGate(
+                        approvalPolicy,
+                        DEFAULT_APPROVAL_MODE,
                         scanner
                 );
 
@@ -337,7 +452,8 @@ public final class ManualAgentApplication {
                 new LargeOutputHook();
 
         /*
-         * 父 Agent 拥有完整的主会话 Hook。
+         * Hook 只保留日志、输出治理和会话扩展能力，
+         * 工具审批由 AgentLoop 中独立的 ToolApprovalGate 负责。
          */
         HookRegistry hookRegistry =
                 new HookRegistry();
@@ -347,7 +463,6 @@ public final class ManualAgentApplication {
                         cwd
                 ),
                 toolLoggingHook,
-                permissionHook,
                 largeOutputHook,
                 new TodoReminderHook(
                         todoState
@@ -359,7 +474,7 @@ public final class ManualAgentApplication {
         );
 
         /*
-         * 子 Agent 仍然经过权限和输出治理，
+         * 子 Agent 仍然经过日志和输出治理，
          * 但不继承与主会话状态绑定的 Hook。
          *
          * 特别是不注册 TodoReminderHook，
@@ -370,7 +485,6 @@ public final class ManualAgentApplication {
 
         subagentHookRegistry.registerAll(
                 toolLoggingHook,
-                permissionHook,
                 largeOutputHook,
                 new BackgroundTaskHook(
                         subagentBackgroundScheduler
@@ -446,6 +560,14 @@ public final class ManualAgentApplication {
                         paths
                 );
 
+        // 按显式顺序注册模型请求级错误 Handler；父子 Agent 共享无状态分派器。
+        ModelRequestRecoveryManager recoveryManager =
+                new ModelRequestRecoveryManager(
+                        List.of(
+                                new ContentRejectionRecoveryHandler()
+                        )
+                );
+
         // 父 Agent 可见、子 Agent 静默；两者只共享输出策略，不共享终端目标。
         StreamOutputPrinter subagentOutputPrinter =
                 new StreamOutputPrinter(
@@ -483,11 +605,13 @@ public final class ManualAgentApplication {
                         subagentSystemPromptManager,
                         runtimeContext,
                         subagentToolRegistry,
+                        approvalGate,
                         subagentHookRegistry,
                         contextManager,
                         subagentOutputPrinter,
                         subagentBackgroundScheduler,
-                        MAX_SUBAGENT_MODEL_ROUNDS
+                        MAX_SUBAGENT_MODEL_ROUNDS,
+                        recoveryManager
                 );
 
         /*
@@ -529,11 +653,13 @@ public final class ManualAgentApplication {
                         parentSystemPromptManager,
                         runtimeContext,
                         toolRegistry,
+                        approvalGate,
                         hookRegistry,
                         contextManager,
                         parentOutputPrinter,
                         parentBackgroundScheduler,
-                        MAX_PARENT_MODEL_ROUNDS
+                        MAX_PARENT_MODEL_ROUNDS,
+                        recoveryManager
                 );
 
 
@@ -600,13 +726,16 @@ public final class ManualAgentApplication {
                                 query
                         );
 
-                history.add(
+                // 记录本次用户消息对象，Provider Error 后按对象身份回滚当前未完成回合。
+                MessageParam userMessage =
                         MessageParam.builder()
                                 .role(
                                         MessageParam.Role.USER
                                 )
                                 .content(query)
-                                .build()
+                                .build();
+                history.add(
+                        userMessage
                 );
 
                 /*
@@ -646,10 +775,22 @@ public final class ManualAgentApplication {
                         );
 
                 // AgentLoop 通过父 Agent 打印器展示文本、thinking、工具调用和工具结果。
-                agentLoop.run(
-                        history,
-                        recalledMemories
-                );
+                try {
+                    agentLoop.run(
+                            history,
+                            recalledMemories
+                    );
+                } catch (AnthropicServiceException exception) {
+                    // Provider Error 已无法在 AgentLoop 内安全恢复，展示官方诊断并回滚当前用户回合。
+                    printProviderError(
+                            exception
+                    );
+                    rollbackFailedTurn(
+                            history,
+                            userMessage
+                    );
+                    continue;
+                }
 
                 // [核心] 把压缩前消息转换为提取器需要的纯文本对话。
                 String extractionDialogue =
@@ -717,7 +858,9 @@ public final class ManualAgentApplication {
             parentBashTool.close();
             subagentBashTool.close();
             githubMcpClient.close();
-            gitMcpClient.close();
+            if (gitMcpClient != null) {
+                gitMcpClient.close();
+            }
             client.close();
             scanner.close();
         }
@@ -738,7 +881,7 @@ public final class ManualAgentApplication {
         // 先完成握手，确保后续 tools/list 和 tools/call 都在有效 MCP 会话中执行。
         client.initialize();
 
-        // 服务端动态返回工具定义，宿主只负责增加命名空间并注册适配器。
+        // 服务端动态返回工具定义，宿主只负责增加命名空间并注册工具包装对象。
         List<McpSchema.Tool> tools =
                 client.listTools();
 
@@ -750,6 +893,283 @@ public final class ManualAgentApplication {
                             tool
                     )
             );
+        }
+    }
+
+    /**
+     * 输出 SDK 和 Provider 原始响应提供的错误诊断。
+     *
+     * @param exception 模型服务端异常
+     */
+    private static void printProviderError(
+            AnthropicServiceException exception
+    ) {
+        // 输出 HTTP 状态、标准错误类型、服务端消息和请求标识。
+        System.out.println(
+                "\n[模型请求失败]"
+        );
+        System.out.println(
+                "HTTP: "
+                        + exception.statusCode()
+        );
+        System.out.println(
+                "type: "
+                        + providerErrorType(
+                        exception
+                )
+        );
+        System.out.println(
+                "message: "
+                        + providerErrorMessage(
+                        exception
+                )
+        );
+        System.out.println(
+                "requestId: "
+                        + providerRequestId(
+                        exception
+                )
+        );
+        System.out.println(
+                "body: "
+                        + providerErrorBody(
+                        exception
+                )
+        );
+    }
+
+    /**
+     * 从 Provider 响应中读取错误类型，优先使用百炼根字段和标准嵌套字段。
+     */
+    private static String providerErrorType(
+            AnthropicServiceException exception
+    ) {
+        JsonNode body =
+                providerErrorNode(
+                        exception.body()
+                );
+        String type =
+                readNodeString(
+                        body,
+                        "code"
+                );
+        if (!type.isBlank()) {
+            return type;
+        }
+
+        type =
+                readNodeString(
+                        body == null
+                                ? null
+                                : body.get(
+                                "error"
+                        ),
+                        "type"
+                );
+        if (!type.isBlank()) {
+            return type;
+        }
+
+        // 百炼兼容端点也可能把错误类型放在响应根字段 type。
+        type =
+                readNodeString(
+                        body,
+                        "type"
+                );
+        if (!type.isBlank()) {
+            return type;
+        }
+
+        return exception.errorType()
+                .map(
+                        errorType -> errorType.asString()
+                )
+                .orElse(
+                        "未返回"
+                );
+    }
+
+    /**
+     * 从 Provider 响应中读取服务端错误消息。
+     */
+    private static String providerErrorMessage(
+            AnthropicServiceException exception
+    ) {
+        JsonNode body =
+                providerErrorNode(
+                        exception.body()
+                );
+        String message =
+                readNodeString(
+                        body,
+                        "message"
+                );
+        if (!message.isBlank()) {
+            return message;
+        }
+
+        message =
+                readNodeString(
+                        body == null
+                                ? null
+                                : body.get(
+                                "error"
+                        ),
+                        "message"
+                );
+        if (!message.isBlank()) {
+            return message;
+        }
+
+        return exception.getMessage() == null
+                || exception.getMessage().isBlank()
+                ? "未返回"
+                : exception.getMessage();
+    }
+
+    /**
+     * 从 Provider 响应 Body 或标准请求头读取 Request ID。
+     */
+    private static String providerRequestId(
+            AnthropicServiceException exception
+    ) {
+        JsonNode body =
+                providerErrorNode(
+                        exception.body()
+                );
+        String requestId =
+                readNodeString(
+                        body,
+                        "request_id"
+                );
+        if (requestId.isBlank()) {
+            requestId =
+                    readNodeString(
+                            body,
+                            "requestId"
+                    );
+        }
+        if (!requestId.isBlank()) {
+            return requestId;
+        }
+
+        if (exception.headers() != null) {
+            for (String headerName
+                    : exception.headers().names()) {
+                if (!"request-id".equalsIgnoreCase(
+                        headerName
+                ) && !"x-request-id".equalsIgnoreCase(
+                        headerName
+                )) {
+                    continue;
+                }
+
+                List<String> values =
+                        exception.headers()
+                                .values(
+                                        headerName
+                                );
+                if (!values.isEmpty()
+                        && !values.get(0).isBlank()) {
+                    return values.get(0);
+                }
+            }
+        }
+
+        return "未返回";
+    }
+
+    /**
+     * 把 SDK JsonValue 错误体转换为 Jackson 节点。
+     */
+    private static JsonNode providerErrorNode(
+            JsonValue value
+    ) {
+        if (value == null
+                || value.isMissing()
+                || value.isNull()) {
+            return null;
+        }
+
+        try {
+            return value.convert(
+                    JsonNode.class
+            );
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 读取 Jackson 对象节点中的文本字段。
+     */
+    private static String readNodeString(
+            JsonNode object,
+            String fieldName
+    ) {
+        if (object == null
+                || !object.isObject()) {
+            return "";
+        }
+
+        JsonNode field =
+                object.get(
+                        fieldName
+                );
+        return field == null
+                || !field.isTextual()
+                ? ""
+                : field.textValue();
+    }
+
+    /**
+     * 返回原始 Provider Body，供无法解析时定位端点兼容问题。
+     */
+    private static String providerErrorBody(
+            AnthropicServiceException exception
+    ) {
+        JsonValue body =
+                exception.body();
+        if (body == null
+                || body.isMissing()
+                || body.isNull()) {
+            return "未返回";
+        }
+
+        JsonNode node =
+                providerErrorNode(
+                        body
+                );
+        return node == null
+                ? body.toString()
+                : node.toString();
+    }
+
+    /**
+     * 从当前历史中移除本次尚未完成的用户回合及其后续消息。
+     *
+     * @param history 可修改的会话历史
+     * @param userMessage 本次用户输入的原始消息对象
+     */
+    private static void rollbackFailedTurn(
+            List<MessageParam> history,
+            MessageParam userMessage
+    ) {
+        // 仅按对象身份定位本次用户消息，避免相同文本的历史消息被误删。
+        for (int index = 0;
+             index < history.size();
+             index++) {
+            if (history.get(index)
+                    != userMessage) {
+                continue;
+            }
+
+            // 用户消息之后的工具事实也属于失败回合，一并回滚到上一次提交边界。
+            history.subList(
+                    index,
+                    history.size()
+            ).clear();
+            return;
         }
     }
 }

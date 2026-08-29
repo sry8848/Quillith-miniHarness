@@ -134,7 +134,7 @@ public final class LoadSkillTool implements AgentTool {
          * 返回技能根目录，帮助模型解析正文中的相对资源路径。
          *
          * 本工具只加载说明，不自动执行技能中的脚本。
-         * 后续 read_file、bash 等调用仍会经过原有权限和 Hook。
+         * 后续 read_file、bash 等调用仍会经过统一审批 Gate 和通用 Hook。
          */
         return ToolExecutionResult.success(
                 "Loaded skill: "

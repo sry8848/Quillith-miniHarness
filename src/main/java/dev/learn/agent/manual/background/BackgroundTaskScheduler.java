@@ -255,9 +255,9 @@ public final class BackgroundTaskScheduler implements AutoCloseable {
      *            不需要参数，
      *            调用 get() 后得到 ToolExecutionResult。
      *
+     *        审批已经由 AgentLoop 的公共工具管线在提交 action 前完成，
      *        这个 action 通常会负责：
      *
-     *        - 权限检查
      *        - 参数检查
      *        - 调用 start() 创建真实后台任务
      *        - 返回“任务已经启动”的 ToolExecutionResult

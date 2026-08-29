@@ -8,7 +8,7 @@ import com.anthropic.core.ObjectMappers;
 import com.anthropic.core.http.StreamResponse;
 import com.anthropic.errors.AnthropicIoException;
 import com.anthropic.errors.AnthropicInvalidDataException;
-import com.anthropic.errors.BadRequestException;
+import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.errors.SseException;
 import com.anthropic.models.messages.ContentBlockParam;
 import com.anthropic.models.messages.MessageCreateParams;
@@ -29,6 +29,8 @@ import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
+import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
+import dev.learn.agent.manual.recovery.ModelRequestRecoveryState;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
@@ -37,6 +39,9 @@ import dev.learn.agent.manual.tool.ToolCall;
 import dev.learn.agent.manual.tool.ToolCallDispatcher;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.tool.ToolRegistry;
+import dev.learn.agent.manual.tool.approval.ToolApprovalGate;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,6 +82,10 @@ public final class AgentLoop {
     private static final int MAX_OUTPUT_CONTINUATIONS =
             3;
 
+    // 保留现有 SSE Provider Error 恢复状态机的最大次数，不与 HTTP 请求 Handler 共用状态。
+    private static final int MAX_SSE_CONTENT_REJECTION_RECOVERIES =
+            2;
+
     // 定义普通文本响应达到输出上限后的续写指令。
     private static final String OUTPUT_CONTINUATION_PROMPT =
             "Output token limit hit. Resume directly — "
@@ -89,6 +98,12 @@ public final class AgentLoop {
                     + "tool calls above have already run. Continue from "
                     + "their results, split remaining calls into smaller "
                     + "calls, and do not repeat completed work.";
+
+    // 定义模型输出被服务端内容检查拒绝时使用的安全恢复说明。
+    private static final String OUTPUT_CONTENT_REJECTION_PROMPT =
+            "The provider rejected the previous model output. Continue "
+                    + "the task with a safe, high-level response and do not "
+                    + "repeat the rejected wording.";
 
     // 定义模型响应流意外中断后的恢复指令。
     private static final String STREAM_INTERRUPTION_PROMPT =
@@ -112,6 +127,9 @@ public final class AgentLoop {
     // 保存可供模型调用的工具注册表。
     private final ToolRegistry toolRegistry;
 
+    // 保存工具进入 ToolRegistry 前的统一审批边界。
+    private final ToolApprovalGate approvalGate;
+
     // 保存当前 AgentLoop 独有的后台任务生命周期调度器。
     private final BackgroundTaskScheduler backgroundScheduler;
 
@@ -130,6 +148,9 @@ public final class AgentLoop {
     // 设计意图：只限制模型持续请求工具的业务轮次，不统计摘要请求和恢复重试，也不作为 API 计费上限。
     private final int maxModelRounds;
 
+    // 保存模型请求级错误的按序恢复分派器。
+    private final ModelRequestRecoveryManager recoveryManager;
+
     /**
      * 创建模型调用和工具执行循环。
      *
@@ -138,11 +159,13 @@ public final class AgentLoop {
      * @param systemPromptManager 动态 System Prompt 管理器
      * @param runtimeContext 当前运行上下文
      * @param toolRegistry 工具注册表
+     * @param approvalGate 工具执行前的审批边界
      * @param hookRegistry Hook 注册表
      * @param contextManager 上下文治理管理器
      * @param outputPrinter 当前 Agent 的流式输出打印器
      * @param backgroundScheduler 当前 AgentLoop 的后台调度器
      * @param maxModelRounds 最大业务模型轮次
+     * @param recoveryManager 模型请求级错误恢复分派器
      * @throws NullPointerException 任一对象依赖为 null 时抛出
      * @throws IllegalArgumentException 最大业务模型轮次不大于 0 时抛出
      */
@@ -152,11 +175,13 @@ public final class AgentLoop {
             SystemPromptManager systemPromptManager,
             RuntimeContext runtimeContext,
             ToolRegistry toolRegistry,
+            ToolApprovalGate approvalGate,
             HookRegistry hookRegistry,
             ContextManager contextManager,
             StreamOutputPrinter outputPrinter,
             BackgroundTaskScheduler backgroundScheduler,
-            int maxModelRounds
+            int maxModelRounds,
+            ModelRequestRecoveryManager recoveryManager
     ) {
         // 校验并保存模型客户端。
         this.client =
@@ -191,6 +216,13 @@ public final class AgentLoop {
                 Objects.requireNonNull(
                         toolRegistry,
                         "ToolRegistry 不能为空"
+                );
+
+        // 校验并保存工具执行前的审批边界。
+        this.approvalGate =
+                Objects.requireNonNull(
+                        approvalGate,
+                        "ToolApprovalGate 不能为空"
                 );
 
         // 保存当前 AgentLoop 独有的后台任务调度器。
@@ -233,6 +265,13 @@ public final class AgentLoop {
         // 设计意图：用明确轮次上限阻止模型持续请求工具而无法结束任务。
         this.maxModelRounds =
                 maxModelRounds;
+
+        // 保存模型请求恢复分派器；具体错误规则不进入 AgentLoop。
+        this.recoveryManager =
+                Objects.requireNonNull(
+                        recoveryManager,
+                        "ModelRequestRecoveryManager 不能为空"
+                );
     }
 
     /**
@@ -242,6 +281,7 @@ public final class AgentLoop {
      * @param turnContext 只进入本轮模型请求、不写入会话历史的临时上下文
      * @return 当前任务最终 assistant 回复中的文本结论
      */
+    @WithSpan("agent.run")
     public String run(
             List<MessageParam> messages,
             String turnContext
@@ -252,6 +292,18 @@ public final class AgentLoop {
                 turnContext,
                 "turnContext 不能为 null"
         );
+
+        // 输出当前 Agent Span 的 Trace ID，用于把终端记录与 Jaeger 查询结果关联起来。
+        Span currentAgentSpan =
+                Span.current();
+        if (currentAgentSpan.getSpanContext().isValid()) {
+            outputPrinter.printLocalMessage(
+                    "\n[Trace ID] "
+                            + currentAgentSpan.getSpanContext()
+                            .getTraceId()
+                            + "\n"
+            );
+        }
 
         // 刷新本轮以及更短生命周期的 System Prompt Item。
         // 设计意图：一次 run 对应一个新用户回合或子任务，必须从该边界更新动态提示词。
@@ -267,6 +319,16 @@ public final class AgentLoop {
         // 初始化跨续写响应累积的完整文本片段。
         List<String> continuedOutputParts =
                 new ArrayList<>();
+
+        // 保留现有 SSE 输出拒绝恢复计数；HTTP 请求级恢复次数由专属 State 保存。
+        int contentRejectionCount =
+                0;
+
+        // 创建当前连续模型请求错误恢复链的初始状态。
+        ModelRequestRecoveryState requestRecoveryState =
+                new ModelRequestRecoveryState(
+                        messages
+                );
 
         // 在业务轮次上限内持续请求模型并处理工具调用。
         for (
@@ -361,11 +423,53 @@ public final class AgentLoop {
             // 设计意图：恢复和续写不重复执行 BeforeModelCall Hook，也不额外占用业务轮次。
             while (true) {
                 // 发送一次主模型请求并取得稳定的流结果。
-                turn =
-                        requestModel(
-                                messages,
-                                turnContext
+                try {
+                    turn =
+                            createStreamingTurn(
+                                    createRequest(
+                                            messages,
+                                            turnContext
+                                    )
+                            );
+                } catch (AnthropicServiceException exception) {
+                    // HTTP Provider Error 交给请求级 Handler；成功恢复后回到同一主循环。
+                    if (recoveryManager.tryRecover(
+                            exception,
+                            requestRecoveryState
+                    )) {
+                        continue;
+                    }
+
+                    // 未识别或不可恢复的异常保持原类型和原实例向外抛出。
+                    throw exception;
+                }
+
+                // SSE Provider Error 携带流中已经完成的内容块和工具执行状态。
+                if (turn.providerError() != null) {
+                    if (!recoverFromProviderError(
+                            messages,
+                            requestRecoveryState,
+                            turn,
+                            turn.providerError(),
+                            contentRejectionCount
+                    )) {
+                        throw turn.providerError();
+                    }
+
+                    // 本次恢复请求已消耗一次内容拒绝恢复机会。
+                    contentRejectionCount++;
+                    continue;
+                }
+
+                // 本次请求已被 Provider 接受：旧恢复链结束，后续错误从新 State 开始。
+                requestRecoveryState =
+                        new ModelRequestRecoveryState(
+                                messages
                         );
+
+                // 保留原有 SSE 连续拒绝计数重置。
+                contentRejectionCount =
+                        0;
 
                 // 根据完整工具调用列表判断本轮是否需要执行工具协议。
                 hasToolUse =
@@ -387,6 +491,16 @@ public final class AgentLoop {
                     commitInterruptedTurn(
                             messages,
                             turn
+                    );
+
+                    // 中断恢复提交的工具结果尚未被下一次模型请求确认，继续保留其 pending ID。
+                    requestRecoveryState.recordPendingToolResults(
+                            turn.toolExecutions()
+                                    .stream()
+                                    .map(
+                                            execution -> execution.toolUse().id()
+                                    )
+                                    .toList()
                     );
 
                     // 标记当前业务轮次需要按流中断规则恢复。
@@ -500,9 +614,9 @@ public final class AgentLoop {
                         continuationMessage +=
                                 "\n\nHook 追加上下文：\n"
                                         + String.join(
-                                                "\n",
-                                                stopEffect.additionalContexts()
-                                        );
+                                        "\n",
+                                        stopEffect.additionalContexts()
+                                );
                     }
 
                     // 把 Stop Hook 的继续处理消息追加到会话历史。
@@ -579,6 +693,16 @@ public final class AgentLoop {
                     )
             );
 
+            // 记录这批结果，Provider 在下一次请求拒绝输入时只替换对应工具结果。
+            requestRecoveryState.recordPendingToolResults(
+                    turn.toolExecutions()
+                            .stream()
+                            .map(
+                                    execution -> execution.toolUse().id()
+                            )
+                            .toList()
+            );
+
             // 当前轮次结束后回到 for 循环，让下一请求读取工具结果和完整历史。
         }
 
@@ -599,65 +723,6 @@ public final class AgentLoop {
     }
 
     /**
-     * 发送一次主模型请求，并只对输入上下文超限恢复一次。
-     *
-     * 输出续写也会调用这个入口，因此每次真实请求
-     * 都会刷新 MODEL_CALL System Prompt；BeforeModelCall Hook 则仍只在
-     * 外层正常轮次执行一次。
-     *
-     * @param messages 当前真实会话历史
-     * @param turnContext 只进入本轮请求的临时上下文
-     * @return 主模型响应
-     */
-    private StreamTurn requestModel(
-            List<MessageParam> messages,
-            String turnContext
-    ) {
-        // 首次发送当前主模型请求。
-        try {
-            return createStreamingTurn(
-                    createRequest(
-                            messages,
-                            turnContext
-                    )
-            );
-        } catch (BadRequestException exception) {
-            // 判断 HTTP 400 是否为已经确认的输入上下文超限错误。
-            // 设计意图：普通 400 还可能表示参数、模型或协议错误，不能据此修改会话历史。
-            if (!isPromptTooLong(
-                    exception
-            )) {
-                throw exception;
-            }
-
-            // 压缩较旧轮次并保留最新 API 轮次，生成恢复后的消息历史。
-            // 设计意图：重试请求仍需处理同一项尚未完成的工作。
-            List<MessageParam> recoveredMessages =
-                    contextManager.recoverFromPromptTooLong(
-                            messages
-                    );
-
-            // 清空被服务端拒绝的原消息历史。
-            // 设计意图：恢复成功后才替换真实历史，避免压缩失败时丢失原数据。
-            messages.clear();
-
-            // 写入恢复压缩成功后的消息历史。
-            messages.addAll(
-                    recoveredMessages
-            );
-
-            // 使用恢复后的历史重试同一个主模型请求。
-            // 设计意图：不再捕获第二次超限，避免形成无限压缩循环。
-            return createStreamingTurn(
-                    createRequest(
-                            messages,
-                            turnContext
-                    )
-            );
-        }
-    }
-
-    /**
      * 消费一次模型事件流，并在内容块关闭时按安全级别调度完整工具调用。
      *
      * 正常结束和中断恢复共用同一份完整内容块；
@@ -666,9 +731,15 @@ public final class AgentLoop {
      * @param request 已构造完成的模型请求
      * @return 本次模型流可安全进入历史的内容和工具执行
      */
+    @WithSpan("llm.call")
     private StreamTurn createStreamingTurn(
             MessageCreateParams request
     ) {
+        // 使用当前模型名称区分同一 Agent 回合中的不同模型请求。
+        Span.current().updateName(
+                "llm.call " + model
+        );
+
         // 初始化已经收到 content_block_stop 的稳定 assistant 内容列表。
         List<ContentBlockParam> assistantContent =
                 new ArrayList<>();
@@ -902,8 +973,8 @@ public final class AgentLoop {
                                             currentContent.isEmpty()
                                                     ? JSON_MAPPER.createObjectNode()
                                                     : JSON_MAPPER.readTree(
-                                                            currentContent.toString()
-                                                    );
+                                                    currentContent.toString()
+                                            );
                                 } catch (JsonProcessingException ignored) {
                                     // 保持输入为空，交由后续校验生成失败的工具结果。
                                     // 设计意图：失败结果沿用原 tool_use_id 返回模型，便于模型修正参数。
@@ -1043,11 +1114,28 @@ public final class AgentLoop {
                                 toolExecutions
                         ),
                         reachedOutputLimit,
-                        false
+                        false,
+                        null
+                );
+            } catch (SseException exception) {
+                // 保留 SSE Provider Error 及此前已经完成的工具调用，交给业务回合恢复判断。
+                return new StreamTurn(
+                        List.copyOf(
+                                assistantContent
+                        ),
+                        String.join(
+                                "\n",
+                                completedText
+                        ),
+                        List.copyOf(
+                                toolExecutions
+                        ),
+                        false,
+                        false,
+                        exception
                 );
             } catch (AnthropicIoException
-                     | AnthropicInvalidDataException
-                     | SseException exception) {
+                     | AnthropicInvalidDataException exception) {
                 // 把可恢复的模型流异常转换为仅含完整内容块的中断结果。
                 return interruptedTurn(
                         assistantContent,
@@ -1103,8 +1191,387 @@ public final class AgentLoop {
                         toolExecutions
                 ),
                 false,
-                true
+                true,
+                null
         );
+    }
+
+    /**
+     * 保留现有 SSE Provider Error 的处理状态机。
+     *
+     * <p>HTTP 模型请求异常已经由 ModelRequestRecoveryManager 处理；本方法只接收
+     * 已经从 SSE 流转换出的 Provider Error，不把流式 partial turn 纳入请求级 Handler。</p>
+     *
+     * @param messages 当前真实会话历史
+     * @param recoveryState 当前连续模型请求错误恢复链状态
+     * @param providerErrorTurn SSE Provider Error 携带的已完成流状态
+     * @param exception SDK 提供的原始 Provider Error
+     * @param previousRejectionCount 当前业务回合在本次拒绝前的连续拒绝次数
+     * @return 本次 SSE 错误已构造恢复请求时返回 true
+     */
+    private boolean recoverFromProviderError(
+            List<MessageParam> messages,
+            ModelRequestRecoveryState recoveryState,
+            StreamTurn providerErrorTurn,
+            AnthropicServiceException exception,
+            int previousRejectionCount
+    ) {
+        // 只有服务端明确返回 DataInspectionFailed 才进入内容拒绝恢复。
+        if (!isDataInspectionFailure(
+                exception
+        )) {
+            return false;
+        }
+
+        // 根据服务端真实消息区分输入拒绝、输出拒绝和未知方向。
+        ContentRejectionDirection direction =
+                contentRejectionDirection(
+                        exception
+                );
+
+        // SSE 输出拒绝可能已经启动工具，先提交完整工具事实再追加恢复说明。
+        if (direction
+                == ContentRejectionDirection.OUTPUT
+                && providerErrorTurn != null) {
+            boolean shouldRetry =
+                    previousRejectionCount
+                            < MAX_SSE_CONTENT_REJECTION_RECOVERIES;
+
+            commitProviderErrorToolFacts(
+                    messages,
+                    providerErrorTurn,
+                    shouldRetry
+                            ? outputContentRejectionMessage(
+                            exception
+                    )
+                            : null
+            );
+
+            // 当前 SSE 请求已经消费了此前的工具结果，后续只追踪本次恢复提交的新结果。
+            recoveryState.recordPendingToolResults(
+                    providerErrorTurn.toolExecutions()
+                            .stream()
+                            .map(
+                                    execution -> execution.toolUse().id()
+                            )
+                            .toList()
+            );
+
+            if (!shouldRetry) {
+                return false;
+            }
+
+            // 记录恢复行为，具体模型请求由当前业务回合继续执行。
+            LOGGER.warn(
+                    "模型输出被 Provider 拒绝，第 {}/{} 次恢复",
+                    previousRejectionCount + 1,
+                    MAX_SSE_CONTENT_REJECTION_RECOVERIES
+            );
+            return true;
+        }
+
+        // SSE 用户输入、方向不明确或无法安全定位的内容拒绝不自动重试。
+        return false;
+    }
+
+    /**
+     * 提交 SSE Provider Error 前已经执行的完整工具事实，并可追加模型恢复说明。
+     *
+     * @param messages 当前真实会话历史
+     * @param providerErrorTurn Provider Error 前已闭合的流内容和工具执行
+     * @param recoveryPrompt 需要交给模型的恢复说明；第三次拒绝时为 null
+     */
+    private void commitProviderErrorToolFacts(
+            List<MessageParam> messages,
+            StreamTurn providerErrorTurn,
+            String recoveryPrompt
+    ) {
+        // 只保留 thinking 和 tool_use，避免把被拒绝的普通输出写回历史。
+        List<ContentBlockParam> safeAssistantContent =
+                providerErrorTurn.assistantContent()
+                        .stream()
+                        .filter(
+                                block -> block.isThinking()
+                                        || block.isToolUse()
+                        )
+                        .toList();
+
+        // 没有工具调用时只追加输出恢复说明，不构造空 assistant 消息。
+        if (providerErrorTurn.toolExecutions()
+                .isEmpty()) {
+            if (recoveryPrompt != null) {
+                messages.add(
+                        MessageParam.builder()
+                                .role(
+                                        MessageParam.Role.USER
+                                )
+                                .content(
+                                        recoveryPrompt
+                                )
+                                .build()
+                );
+            }
+            return;
+        }
+
+        // 等待并预算已经启动的工具结果，保持原 tool_use_id 的协议配对。
+        List<ContentBlockParam> userContent =
+                new ArrayList<>(
+                        collectToolResults(
+                                providerErrorTurn.toolExecutions()
+                        )
+                );
+
+        // Anthropic 要求 tool_result 在同一 user 消息的普通文本之前。
+        if (recoveryPrompt != null) {
+            userContent.add(
+                    textBlock(
+                            recoveryPrompt
+                    )
+            );
+        }
+
+        // 先提交完整 assistant 工具调用，再提交对应结果和可选恢复说明。
+        messages.add(
+                toAssistantMessage(
+                        safeAssistantContent
+                )
+        );
+        messages.add(
+                MessageParam.builder()
+                        .role(
+                                MessageParam.Role.USER
+                        )
+                        .contentOfBlockParams(
+                                userContent
+                        )
+                        .build()
+        );
+    }
+
+    /**
+     * 判断 Provider 是否明确返回内容检查失败。
+     */
+    private static boolean isDataInspectionFailure(
+            AnthropicServiceException exception
+    ) {
+        String code =
+                providerErrorCode(
+                        exception
+                ).replace(
+                        "_",
+                        ""
+                ).toLowerCase(
+                        Locale.ROOT
+                );
+        return "datainspectionfailed".equals(
+                code
+        );
+    }
+
+    /**
+     * 按 Provider 原始错误消息识别内容检查方向；同时出现 input/output 时保持未知。
+     */
+    private static ContentRejectionDirection contentRejectionDirection(
+            AnthropicServiceException exception
+    ) {
+        String message =
+                providerErrorMessage(
+                        exception
+                ).toLowerCase(
+                        Locale.ROOT
+                );
+        boolean input =
+                message.contains(
+                        "input"
+                );
+        boolean output =
+                message.contains(
+                        "output"
+                );
+
+        if (input && !output) {
+            return ContentRejectionDirection.INPUT;
+        }
+        if (output && !input) {
+            return ContentRejectionDirection.OUTPUT;
+        }
+        return ContentRejectionDirection.UNKNOWN;
+    }
+
+    /**
+     * 构造模型输出被拒绝时的模型可见恢复说明。
+     */
+    private static String outputContentRejectionMessage(
+            AnthropicServiceException exception
+    ) {
+        return OUTPUT_CONTENT_REJECTION_PROMPT
+                + "\n"
+                + providerErrorSummary(
+                exception
+        );
+    }
+
+    /**
+     * 只把服务端明确返回的错误码和消息交给模型，不把原始工具结果带回请求。
+     */
+    private static String providerErrorSummary(
+            AnthropicServiceException exception
+    ) {
+        return "Provider error code: "
+                + providerErrorCode(
+                exception
+        )
+                + "\nProvider message: "
+                + providerErrorMessage(
+                exception
+        );
+    }
+
+    /**
+     * 读取 Provider 响应中的错误码，兼容百炼根字段和 Anthropic 嵌套 error.type。
+     */
+    private static String providerErrorCode(
+            AnthropicServiceException exception
+    ) {
+        JsonNode body =
+                providerErrorBody(
+                        exception.body()
+                );
+        String code =
+                readBodyString(
+                        body,
+                        "code"
+                );
+        if (!code.isBlank()) {
+            return code;
+        }
+
+        JsonNode errorObject =
+                body == null
+                        ? null
+                        : body.get(
+                                "error"
+                        );
+        code =
+                readBodyString(
+                        errorObject,
+                        "type"
+                );
+        if (!code.isBlank()) {
+            return code;
+        }
+
+        // 百炼兼容端点也可能把 Anthropic 错误类型放在响应根字段 type。
+        code =
+                readBodyString(
+                        body,
+                        "type"
+                );
+        if (!code.isBlank()) {
+            return code;
+        }
+
+        return exception.errorType()
+                .map(
+                        type -> type.asString()
+                )
+                .orElse(
+                        "未返回"
+                );
+    }
+
+    /**
+     * 读取 Provider 响应中的服务端错误消息。
+     */
+    private static String providerErrorMessage(
+            AnthropicServiceException exception
+    ) {
+        JsonNode body =
+                providerErrorBody(
+                        exception.body()
+                );
+        String message =
+                readBodyString(
+                        body,
+                        "message"
+                );
+        if (!message.isBlank()) {
+            return message;
+        }
+
+        message =
+                readBodyString(
+                        body == null
+                                ? null
+                                : body.get(
+                                "error"
+                        ),
+                        "message"
+                );
+        if (!message.isBlank()) {
+            return message;
+        }
+
+        return exception.getMessage() == null
+                || exception.getMessage().isBlank()
+                ? "未返回"
+                : exception.getMessage();
+    }
+
+    /**
+     * 把 SDK JsonValue 错误体转换为 Jackson 节点。
+     */
+    private static JsonNode providerErrorBody(
+            JsonValue value
+    ) {
+        if (value == null
+                || value.isMissing()
+                || value.isNull()) {
+            return null;
+        }
+
+        try {
+            return value.convert(
+                    JsonNode.class
+            );
+        } catch (RuntimeException ignored) {
+            // Provider 返回非 JSON 错误体时由上层显示原始异常消息。
+            return null;
+        }
+    }
+
+    /**
+     * 从 Jackson 错误节点读取一个字符串字段。
+     */
+    private static String readBodyString(
+            JsonNode object,
+            String fieldName
+    ) {
+        if (object == null
+                || !object.isObject()) {
+            return "";
+        }
+
+        JsonNode field =
+                object.get(
+                        fieldName
+                );
+        if (field == null
+                || !field.isTextual()) {
+            return "";
+        }
+
+        return field.textValue();
+    }
+
+    /**
+     * 内容检查错误来自输入、输出或无法确定的方向。
+     */
+    private enum ContentRejectionDirection {
+        INPUT,
+        OUTPUT,
+        UNKNOWN
     }
 
     /**
@@ -1130,9 +1597,15 @@ public final class AgentLoop {
      * @param toolUse 已收到 content_block_stop 的工具调用
      * @return 保留真实成功或失败状态的工具执行结果
      */
+    @WithSpan("tool.execute")
     private ToolExecutionResult executeTool(
             ToolUseBlock toolUse
     ) {
+        // 使用真实工具名称区分本地工具、task 子 Agent 工具和 MCP 工具。
+        Span.current().updateName(
+                "tool.execute " + toolUse.name()
+        );
+
         // 在工具执行管线边界内捕获未处理的运行时异常。
         try {
             // 把 SDK 工具块转换成 Hook 和工具注册表共用的内部对象。
@@ -1141,7 +1614,7 @@ public final class AgentLoop {
                             toolUse
                     );
 
-            // 触发工具执行前 Hook，取得权限决策和输入修改。
+            // 触发通用工具执行前 Hook，取得扩展决策和输入修改。
             HookEffect beforeEffect =
                     hookRegistry.triggerBeforeToolUse(
                             toolCall
@@ -1154,10 +1627,10 @@ public final class AgentLoop {
             HookEffect combinedEffect =
                     beforeEffect;
 
-            // 根据前置 Hook 的决策选择拒绝工具或执行完整管线。
+            // 根据前置 Hook 的决策选择停止管线或继续执行。
             if (beforeEffect.decision()
                     == HookEffect.Decision.BLOCK) {
-                // 为被前置 Hook 拒绝的工具构造失败结果。
+                // 为被通用前置 Hook 阻止的工具构造失败结果。
                 // 设计意图：不执行工具，但仍返回可与原 tool_use 配对的错误。
                 executionResult =
                         ToolExecutionResult.failure(
@@ -1169,35 +1642,44 @@ public final class AgentLoop {
                         beforeEffect.updatedInput() == null
                                 ? toolCall
                                 : toolCall.withInput(
-                                        beforeEffect.updatedInput()
-                                );
-
-                // 通过工具注册表执行最终工具调用。
-                executionResult =
-                        toolRegistry.execute(
-                                effectiveToolCall
+                                beforeEffect.updatedInput()
                         );
 
-                // 对已经执行的工具触发 AfterToolUse Hook。
-                // 设计意图：被权限拒绝的工具没有真实执行结果，不应触发后置 Hook。
-                HookEffect afterEffect =
-                        hookRegistry.triggerAfterToolUse(
-                                effectiveToolCall,
-                                executionResult.content()
-                        );
-
-                // 合并前置和后置 Hook 产生的效果。
-                combinedEffect =
-                        beforeEffect.and(
-                                afterEffect
-                        );
-
-                // 在后置 Hook 修改输出时保留原工具的成功或失败状态。
-                if (afterEffect.updatedOutput() != null) {
+                // 审批发生在真实工具执行之前，Gate 不执行工具本身。
+                if (approvalGate.approve(effectiveToolCall)) {
+                    // 通过工具注册表执行最终工具调用。
                     executionResult =
-                            new ToolExecutionResult(
-                                    afterEffect.updatedOutput(),
-                                    executionResult.error()
+                            toolRegistry.execute(
+                                    effectiveToolCall
+                            );
+
+                    // 对已经执行的工具触发 AfterToolUse Hook。
+                    // 设计意图：没有真实执行的审批拒绝不应产生后置工具观测。
+                    HookEffect afterEffect =
+                            hookRegistry.triggerAfterToolUse(
+                                    effectiveToolCall,
+                                    executionResult.content()
+                            );
+
+                    // 合并前置和后置 Hook 产生的效果。
+                    combinedEffect =
+                            beforeEffect.and(
+                                    afterEffect
+                            );
+
+                    // 在后置 Hook 修改输出时保留原工具的成功或失败状态。
+                    if (afterEffect.updatedOutput() != null) {
+                        executionResult =
+                                new ToolExecutionResult(
+                                        afterEffect.updatedOutput(),
+                                        executionResult.error()
+                                );
+                    }
+                } else {
+                    // 用户拒绝审批时不进入 ToolRegistry，也不触发 AfterToolUse Hook。
+                    executionResult =
+                            ToolExecutionResult.failure(
+                                    "Permission denied by user"
                             );
                 }
             }
@@ -1213,9 +1695,9 @@ public final class AgentLoop {
                 output +=
                         "\n\nHook 追加上下文：\n"
                                 + String.join(
-                                        "\n",
-                                        combinedEffect.additionalContexts()
-                                );
+                                "\n",
+                                combinedEffect.additionalContexts()
+                        );
             }
 
             // 返回 Hook 处理完成且保留原错误状态的工具结果。
@@ -1224,7 +1706,7 @@ public final class AgentLoop {
                     executionResult.error()
             );
         } catch (RuntimeException exception) {
-            // 记录 Hook、权限或工具管线抛出的未处理异常。
+            // 记录 Hook、审批或工具管线抛出的未处理异常。
             // 设计意图：Future 边界统一兜住执行管线，完整异常进入日志，模型只接收可配对的精简错误。
             LOGGER.error(
                     "工具调用 {}({}) 的执行管线发生未处理异常",
@@ -1242,7 +1724,7 @@ public final class AgentLoop {
                     exceptionMessage == null
                             || exceptionMessage.isBlank()
                             ? exception.getClass()
-                                    .getSimpleName()
+                              .getSimpleName()
                             : exceptionMessage;
 
             // 返回与原工具调用配对的管线失败结果。
@@ -1420,45 +1902,16 @@ public final class AgentLoop {
      * @param toolExecutions 按模型调用顺序保存的工具 Future
      * @param reachedOutputLimit 正常流是否达到输出上限
      * @param interrupted 本次流是否在 message_stop 前中断
+     * @param providerError SSE 流收到的 Provider Error；正常结果为 null
      */
     private record StreamTurn(
             List<ContentBlockParam> assistantContent,
             String text,
             List<PendingToolExecution> toolExecutions,
             boolean reachedOutputLimit,
-            boolean interrupted
+            boolean interrupted,
+            AnthropicServiceException providerError
     ) {
-    }
-
-    /**
-     * 判断百炼或 Anthropic 是否因输入上下文过长拒绝主请求。
-     *
-     * 当前应用固定使用百炼的 Anthropic 兼容端点，
-     * 因此这里只识别两个已经确认的错误文本，
-     * 不把所有 BadRequestException 都当成可恢复错误。
-     *
-     * @param exception Anthropic Java SDK 返回的 HTTP 400 异常
-     * @return 错误内容明确表示输入上下文超限时返回 true
-     */
-    private static boolean isPromptTooLong(
-            BadRequestException exception
-    ) {
-        // 读取 SDK 异常中的服务端响应文本并统一转换为小写。
-        // 设计意图：使用 ROOT 区域规则，保证大小写转换不受运行机器语言环境影响。
-        String errorMessage =
-                exception.getMessage()
-                        .toLowerCase(
-                                Locale.ROOT
-                        );
-
-        // 匹配 Anthropic 和百炼已经确认的输入上下文超限文本。
-        // 设计意图：只识别明确错误文本，不把其他 BadRequestException 错判为可恢复错误。
-        return errorMessage.contains(
-                "prompt is too long"
-        )
-                || errorMessage.contains(
-                "range of input length should be [1,"
-        );
     }
 
     /**
@@ -1476,7 +1929,7 @@ public final class AgentLoop {
             String turnContext
     ) {
         // 刷新 MODEL_CALL 生命周期的 System Prompt Item。
-        // 设计意图：普通调用和上下文超限后的恢复重试都会从此入口取得最新提示词。
+        // 设计意图：每一次真实模型请求都从同一入口取得最新提示词。
         SystemPrompt systemPrompt =
                 systemPromptManager.refreshFrom(
                         RefreshScope.MODEL_CALL,

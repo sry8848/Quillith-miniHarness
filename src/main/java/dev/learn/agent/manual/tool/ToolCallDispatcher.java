@@ -9,7 +9,7 @@ import java.util.function.Supplier;
 /**
  * 将一轮模型响应中的完整工具调用分流到前台或后台调度器。
  *
- * 本类只决定调度路径，具体 Hook、权限和工具执行仍由调用方提供的公共管线完成。
+ * 本类只决定调度路径，具体 Hook、审批和工具执行仍由调用方提供的公共管线完成。
  */
 public final class ToolCallDispatcher implements AutoCloseable {
 

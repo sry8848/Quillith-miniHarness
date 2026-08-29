@@ -43,7 +43,9 @@ public final class WorkspaceSystemPromptProvider
                 "当前工作目录："
                         + runtimeContext.cwd()
                         + "\nGit 仓库根目录："
-                        + runtimeContext.gitRoot()
+                        + (runtimeContext.gitRoot() == null
+                        ? "未发现"
+                        : runtimeContext.gitRoot().toString())
         );
     }
 }
