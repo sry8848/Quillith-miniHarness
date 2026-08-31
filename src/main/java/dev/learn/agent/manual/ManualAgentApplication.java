@@ -7,6 +7,7 @@ import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.models.messages.MessageParam;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
+import dev.learn.agent.manual.cli.ApplicationOptions;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -20,18 +21,14 @@ import dev.learn.agent.manual.mcp.GitMcpClient;
 import dev.learn.agent.manual.mcp.GitHubMcpClient;
 import dev.learn.agent.manual.mcp.McpAgentTool;
 import dev.learn.agent.manual.mcp.McpToolClient;
-import dev.learn.agent.manual.memory.MemoryConsolidator;
-import dev.learn.agent.manual.memory.MemoryDialogueFormatter;
-import dev.learn.agent.manual.memory.MemoryEntry;
-import dev.learn.agent.manual.memory.MemoryExtractor;
-import dev.learn.agent.manual.memory.MemoryRecallService;
-import dev.learn.agent.manual.memory.MemoryRepository;
-import dev.learn.agent.manual.memory.MemorySelector;
+import dev.learn.agent.manual.memory.MemoryRuntime;
+import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ContentRejectionRecoveryHandler;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.systemprompt.IdentitySystemPromptProvider;
+import dev.learn.agent.manual.systemprompt.MemorySystemPromptProvider;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
@@ -117,11 +114,16 @@ public final class ManualAgentApplication {
     /**
      * 启动交互式 Coding Agent。
      *
-     * @param args 命令行参数，当前版本暂不使用
+     * @param args 命令行参数
      */
     public static void main(
             String[] args
     ) throws IOException {
+        ApplicationOptions options =
+                ApplicationOptions.parse(
+                        args
+                );
+
         Path cwd =
                 Path.of("")
                         .toRealPath();
@@ -503,47 +505,15 @@ public final class ManualAgentApplication {
                         .build();
 
         /*
-         * [核心] 记忆仓库提供候选和正文，Selector 负责相关性判断，
-         * RecallService 将两者组合成本轮可以临时注入的上下文。
+         * [核心] MemoryRuntime 统一持有记忆仓库、召回、提取和整理能力，
+         * 并把命令行参数作为本次会话的初始开关状态。
          */
-        MemoryRepository memoryRepository =
-                new MemoryRepository(
-                        paths
-                );
-
-        MemorySelector memorySelector =
-                new MemorySelector(
-                        client,
-                        MODEL
-                );
-
-        MemoryRecallService memoryRecallService =
-                new MemoryRecallService(
-                        memoryRepository,
-                        memorySelector
-                );
-
-        /*
-         * [核心] Extractor 在完整用户回合结束后，
-         * 从压缩前对话快照中生成长期记忆候选。
-         *
-         * 它不直接写仓库，保存动作仍由应用层明确编排。
-         */
-        MemoryExtractor memoryExtractor =
-                new MemoryExtractor(
-                        client,
-                        MODEL
-                );
-
-        /*
-         * Consolidator 只在记忆集合发生写入后由应用层触发，
-         * 内部再通过数量阈值判断是否值得调用模型整理。
-         */
-        MemoryConsolidator memoryConsolidator =
-                new MemoryConsolidator(
+        MemoryRuntime memoryRuntime =
+                new MemoryRuntime(
+                        options.memoryEnabled(),
                         client,
                         MODEL,
-                        memoryRepository
+                        paths
                 );
 
         /*
@@ -627,8 +597,9 @@ public final class ManualAgentApplication {
         );
 
         /*
-         * 父 Agent 的能力说明分别由身份、工作区和 Skill 模块提供。
+         * 父 Agent 的能力说明分别由身份、工作区、记忆和 Skill 模块提供。
          * Todo 和 Task 的使用说明已经属于各自的 Tool description。
+         * MemoryRuntime 负责统一处理记忆的开启、关闭和运行中切换。
          */
         SystemPromptManager parentSystemPromptManager =
                 new SystemPromptManager(
@@ -636,6 +607,9 @@ public final class ManualAgentApplication {
                                 IdentitySystemPromptProvider
                                         .parent(),
                                 new WorkspaceSystemPromptProvider(),
+                                new MemorySystemPromptProvider(
+                                        memoryRuntime
+                                ),
                                 skillRegistry
                         )
                 );
@@ -678,6 +652,10 @@ public final class ManualAgentApplication {
                 "输入任务并回车，输入 q 或 exit 退出。"
         );
 
+        System.out.println(
+                "记忆命令：/memory on、/memory off、/memory status。"
+        );
+
         try {
             while (true) {
                 System.out.println();
@@ -699,6 +677,16 @@ public final class ManualAgentApplication {
                     break;
                 }
 
+                if (isMemoryCommand(command)) {
+                    handleMemoryCommand(
+                            command,
+                            memoryRuntime,
+                            parentSystemPromptManager,
+                            runtimeContext
+                    );
+                    continue;
+                }
+
                 HookEffect promptEffect =
                         hookRegistry
                                 .triggerUserPromptSubmit(
@@ -716,13 +704,23 @@ public final class ManualAgentApplication {
                 }
 
                 /*
+                 * [核心] 每个用户回合开始时刷新工作区和记忆这两个 SESSION section。
+                 * 这样上一轮结束后新生成的 MEMORY.md 索引会进入本轮所有模型请求，
+                 * 同时不会随着同一回合的每次模型请求重复读取文件。
+                 */
+                parentSystemPromptManager.refreshFrom(
+                        RefreshScope.SESSION,
+                        runtimeContext
+                );
+
+                /*
                  * [核心] 在主 Agent 第一次处理用户问题前召回相关记忆。
                  *
                  * 返回内容稍后只进入本轮模型请求，
                  * 不会作为正式 MessageParam 写入 history。
                  */
                 String recalledMemories =
-                        memoryRecallService.recall(
+                        memoryRuntime.recall(
                                 query
                         );
 
@@ -770,7 +768,7 @@ public final class ManualAgentApplication {
                  * 因此不会进入这份快照并被重复提取。
                  */
                 List<MessageParam> memoryExtractionSnapshot =
-                        List.copyOf(
+                        memoryRuntime.capture(
                                 history
                         );
 
@@ -792,60 +790,24 @@ public final class ManualAgentApplication {
                     continue;
                 }
 
-                // [核心] 把压缩前消息转换为提取器需要的纯文本对话。
-                String extractionDialogue =
-                        MemoryDialogueFormatter.format(
+                MemoryTurnResult memoryTurnResult =
+                        memoryRuntime.completeTurn(
                                 memoryExtractionSnapshot
                         );
 
-                /*
-                 * [核心] 根据原始对话和已有记忆目录，
-                 * 生成已经通过协议校验的长期记忆候选。
-                 */
-                List<MemoryEntry> extractedMemories =
-                        memoryExtractor.extract(
-                                extractionDialogue,
-                                memoryRepository.list()
-                        );
-
-                /*
-                 * [核心] 逐条发布候选，并在每次保存后重建索引。
-                 *
-                 * 当前没有批次事务；中途失败可能只保存前半批，
-                 * 该可靠性缺口已经记录在 s09 待办中。
-                 */
-                for (
-                        MemoryEntry entry
-                        : extractedMemories
-                ) {
-                    memoryRepository.save(
-                            entry
-                    );
-                }
-
                 // 保存成功时显示本轮实际产生的记忆数量。
-                if (!extractedMemories.isEmpty()) {
+                if (memoryTurnResult.savedCount() > 0) {
                     System.out.println(
                             "[Memory：已保存 "
-                                    + extractedMemories.size()
+                                    + memoryTurnResult.savedCount()
                                     + " 条记忆]"
                     );
 
-                    /*
-                     * [核心] 只有本轮实际写入了记忆，才检查是否需要整理。
-                     *
-                     * [边界：目录没有变化却在每轮按数量触发 →
-                     * 稳定的十条有效记忆会导致重复模型调用和持续成本]
-                     */
-                    List<MemoryEntry> consolidatedMemories =
-                            memoryConsolidator
-                                    .consolidateIfNeeded();
-
                     // 整理器返回空列表表示当前尚未达到数量阈值。
-                    if (!consolidatedMemories.isEmpty()) {
+                    if (memoryTurnResult.consolidatedCount() > 0) {
                         System.out.println(
                                 "[Memory：整理后保留 "
-                                        + consolidatedMemories.size()
+                                        + memoryTurnResult.consolidatedCount()
                                         + " 条记忆]"
                         );
                     }
@@ -864,6 +826,85 @@ public final class ManualAgentApplication {
             client.close();
             scanner.close();
         }
+    }
+
+    /**
+     * 判断输入是否是交互式记忆控制命令。
+     */
+    private static boolean isMemoryCommand(
+            String command
+    ) {
+        return "/memory".equalsIgnoreCase(
+                command
+        ) || command.regionMatches(
+                true,
+                0,
+                "/memory ",
+                0,
+                "/memory ".length()
+        );
+    }
+
+    /**
+     * 执行交互式记忆开关命令，并立即刷新父 Agent 的 System Prompt。
+     */
+    private static void handleMemoryCommand(
+            String command,
+            MemoryRuntime memoryRuntime,
+            SystemPromptManager parentSystemPromptManager,
+            RuntimeContext runtimeContext
+    ) {
+        String argument =
+                command.length()
+                        == "/memory".length()
+                        ? ""
+                        : command.substring(
+                                "/memory".length()
+                        ).trim();
+
+        if ("on".equalsIgnoreCase(argument)) {
+            memoryRuntime.setEnabled(
+                    true
+            );
+            parentSystemPromptManager.refreshFrom(
+                    RefreshScope.SESSION,
+                    runtimeContext
+            );
+            System.out.println(
+                    "[Memory：已开启]"
+            );
+            return;
+        }
+
+        if ("off".equalsIgnoreCase(argument)) {
+            memoryRuntime.setEnabled(
+                    false
+            );
+            parentSystemPromptManager.refreshFrom(
+                    RefreshScope.SESSION,
+                    runtimeContext
+            );
+            System.out.println(
+                    "[Memory：已关闭]"
+            );
+            return;
+        }
+
+        if ("status".equalsIgnoreCase(argument)
+                || argument.isEmpty()) {
+            System.out.println(
+                    "[Memory："
+                            + (memoryRuntime.enabled()
+                            ? "已开启"
+                            : "已关闭")
+                            + "]"
+            );
+            return;
+        }
+
+        System.out.println(
+                "用法：/memory on | /memory off | /memory status"
+        );
     }
 
     /**
