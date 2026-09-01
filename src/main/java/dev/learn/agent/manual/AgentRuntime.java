@@ -264,7 +264,7 @@ public final class AgentRuntime implements AutoCloseable {
         ToolApprovalGate approvalGate =
                 new ToolApprovalGate(
                         approvalPolicy,
-                        agentState.approvalMode(),
+                        agentState,
                         scanner
                 );
         LargeOutputHook largeOutputHook =
@@ -305,7 +305,7 @@ public final class AgentRuntime implements AutoCloseable {
                         .build();
         MemoryRuntime memoryRuntime =
                 new MemoryRuntime(
-                        agentState.memoryEnabled(),
+                        agentState,
                         client,
                         MODEL,
                         paths

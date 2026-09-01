@@ -2,6 +2,7 @@ package dev.learn.agent.manual.memory;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.MessageParam;
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
 import java.io.IOException;
@@ -10,15 +11,15 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 统一管理一次应用会话中的记忆能力和开关状态。
+ * 统一管理一次应用会话中的记忆能力，并消费 AgentState 中的开关状态。
  *
  * 记忆 Provider、按需召回、回合结束提取和整理都通过这里判断是否启用，
  * 避免应用入口在多个阶段重复维护同一个开关。
  */
 public final class MemoryRuntime {
 
-    // 当前交互会话中的记忆开关状态；主循环只在单线程修改它。
-    private boolean enabled;
+    // 当前 CLI Session 的记忆开关由 AgentState 唯一持有。
+    private final AgentState agentState;
 
     // 记忆能力使用的持久化仓库和模型服务。
     private final MemoryRepository repository;
@@ -29,18 +30,21 @@ public final class MemoryRuntime {
     /**
      * 创建记忆运行时。
      *
-     * @param enabled 初始是否启用记忆
+     * @param agentState 当前 CLI Session 状态
      * @param client 应用共享的模型客户端
      * @param model 记忆相关模型调用使用的模型名称
      * @param paths 当前工作区路径边界
      */
     public MemoryRuntime(
-            boolean enabled,
+            AgentState agentState,
             AnthropicClient client,
             String model,
             WorkspacePathResolver paths
     ) {
-        this.enabled = enabled;
+        this.agentState = Objects.requireNonNull(
+                agentState,
+                "AgentState 不能为空"
+        );
 
         this.repository =
                 new MemoryRepository(
@@ -74,28 +78,12 @@ public final class MemoryRuntime {
     }
 
     /**
-     * 返回当前记忆开关状态。
-     */
-    public boolean enabled() {
-        return enabled;
-    }
-
-    /**
-     * 修改当前记忆开关状态。
-     */
-    public void setEnabled(
-            boolean enabled
-    ) {
-        this.enabled = enabled;
-    }
-
-    /**
      * 读取供 System Prompt 使用的 MEMORY.md 索引。
      *
      * @return 原始索引文本；记忆关闭或没有索引时为空
      */
     public Optional<String> loadIndex() {
-        if (!enabled) {
+        if (!agentState.memoryEnabled()) {
             return Optional.empty();
         }
 
@@ -131,7 +119,7 @@ public final class MemoryRuntime {
                 "query 不能为 null"
         );
 
-        if (!enabled) {
+        if (!agentState.memoryEnabled()) {
             return "";
         }
 
@@ -154,7 +142,7 @@ public final class MemoryRuntime {
                 "history 不能为 null"
         );
 
-        if (!enabled) {
+        if (!agentState.memoryEnabled()) {
             return List.of();
         }
 
@@ -178,7 +166,7 @@ public final class MemoryRuntime {
                 "记忆快照不能为 null"
         );
 
-        if (!enabled) {
+        if (!agentState.memoryEnabled()) {
             return MemoryTurnResult.NONE;
         }
 

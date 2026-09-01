@@ -432,7 +432,7 @@ class ManualAgentTest {
                     );
             MemoryRuntime memoryRuntime =
                     new MemoryRuntime(
-                            memoryEnabled,
+                            agentState,
                             client,
                             "test-model",
                             paths
@@ -448,7 +448,7 @@ class ManualAgentTest {
                                     new DefaultToolApprovalPolicy(
                                             paths
                                     ),
-                                    ToolApprovalMode.BYPASS,
+                                    agentState,
                                     null
                             ),
                             hookRegistry,

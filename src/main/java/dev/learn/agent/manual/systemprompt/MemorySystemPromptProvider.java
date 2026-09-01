@@ -15,7 +15,7 @@ import java.util.Optional;
 public final class MemorySystemPromptProvider
         implements SystemPromptProvider {
 
-    // 记忆开关和索引读取由统一的 MemoryRuntime 管理。
+    // MemoryRuntime 读取共享 AgentState，并负责索引读取。
     private final MemoryRuntime memoryRuntime;
 
     /**

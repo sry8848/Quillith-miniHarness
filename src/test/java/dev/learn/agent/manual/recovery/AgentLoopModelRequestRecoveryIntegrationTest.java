@@ -411,14 +411,6 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             "test-model",
                             paths
                     );
-            ToolApprovalGate approvalGate =
-                    new ToolApprovalGate(
-                            new DefaultToolApprovalPolicy(
-                                    paths
-                            ),
-                            ToolApprovalMode.BYPASS,
-                            null
-                    );
             AgentState agentState =
                     new AgentState(
                             false,
@@ -427,6 +419,14 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             workspace,
                             List.of(workspace),
                             workspace
+                    );
+            ToolApprovalGate approvalGate =
+                    new ToolApprovalGate(
+                            new DefaultToolApprovalPolicy(
+                                    paths
+                            ),
+                            agentState,
+                            null
                     );
             this.agentLoop =
                     new AgentLoop(

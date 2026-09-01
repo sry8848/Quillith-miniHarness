@@ -55,10 +55,19 @@ class MemorySystemPromptProviderTest {
                             "正文不应在索引注入时加载"
                     )
             );
+            AgentState agentState =
+                    new AgentState(
+                            true,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
 
             MemoryRuntime runtime =
                     new MemoryRuntime(
-                            true,
+                            agentState,
                             client,
                             "test-model",
                             paths
@@ -75,14 +84,7 @@ class MemorySystemPromptProviderTest {
             SystemPrompt prompt =
                     manager.refreshFrom(
                             RefreshScope.APPLICATION,
-                            new AgentState(
-                                    true,
-                                    ToolApprovalMode.BYPASS,
-                                    workspace,
-                                    workspace,
-                                    List.of(workspace),
-                                    null
-                            )
+                            agentState
                     );
 
             assertTrue(
@@ -139,10 +141,19 @@ class MemorySystemPromptProviderTest {
                             "正文"
                     )
             );
+            AgentState agentState =
+                    new AgentState(
+                            true,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
 
             MemoryRuntime runtime =
                     new MemoryRuntime(
-                            true,
+                            agentState,
                             client,
                             "test-model",
                             paths
@@ -155,20 +166,10 @@ class MemorySystemPromptProviderTest {
                                     )
                             )
                     );
-            AgentState context =
-                    new AgentState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-
             assertTrue(
                     manager.refreshFrom(
                                     RefreshScope.APPLICATION,
-                                    context
+                                    agentState
                             )
                             .content()
                             .contains(
@@ -176,13 +177,13 @@ class MemorySystemPromptProviderTest {
                             )
             );
 
-            runtime.setEnabled(
+            agentState.setMemoryEnabled(
                     false
             );
             assertFalse(
                     manager.refreshFrom(
                                     RefreshScope.SESSION,
-                                    context
+                                    agentState
                             )
                             .content()
                             .contains(
@@ -190,13 +191,13 @@ class MemorySystemPromptProviderTest {
                             )
             );
 
-            runtime.setEnabled(
+            agentState.setMemoryEnabled(
                     true
             );
             assertTrue(
                     manager.refreshFrom(
                                     RefreshScope.SESSION,
-                                    context
+                                    agentState
                             )
                             .content()
                             .contains(
@@ -217,9 +218,18 @@ class MemorySystemPromptProviderTest {
         AnthropicClient client =
                 testClient();
         try {
+            AgentState agentState =
+                    new AgentState(
+                            false,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
             MemoryRuntime runtime =
                     new MemoryRuntime(
-                            false,
+                            agentState,
                             client,
                             "test-model",
                             new WorkspacePathResolver(
