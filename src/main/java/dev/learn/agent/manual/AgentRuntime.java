@@ -133,7 +133,7 @@ public final class AgentRuntime implements AutoCloseable {
 
         WorkspacePathResolver paths =
                 new WorkspacePathResolver(
-                        workspace
+                        agentState
                 );
         SkillRegistry skillRegistry =
                 new SkillRegistry(

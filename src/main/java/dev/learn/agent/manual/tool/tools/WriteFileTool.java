@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 在可访问路径中创建或覆盖 UTF-8 文本文件。
+ * 在 allowedRoots 内创建或覆盖 UTF-8 文本文件。
  */
 public final class WriteFileTool implements AgentTool {
 
@@ -29,7 +29,7 @@ public final class WriteFileTool implements AgentTool {
                     Map.of(
                             "path",
                             ToolDefinitionFactory.stringProperty(
-                                    "Path relative to the workspace or an accessible external path."
+                            "Path relative to the workspace or an allowed root path."
                             ),
                             "content",
                             ToolDefinitionFactory.stringProperty(
@@ -89,7 +89,7 @@ public final class WriteFileTool implements AgentTool {
 
         try {
             Path file =
-                    paths.resolveForWriteAnywhere(
+                    paths.resolveForWrite(
                             pathText
                     );
 

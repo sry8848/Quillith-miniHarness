@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 按 UTF-8 读取可访问路径中的文本文件。
+ * 按 UTF-8 读取 allowedRoots 内的文本文件。
  */
 public final class ReadFileTool implements AgentTool {
 
@@ -29,7 +29,7 @@ public final class ReadFileTool implements AgentTool {
                     Map.of(
                             "path",
                             ToolDefinitionFactory.stringProperty(
-                                    "Path relative to the workspace or an accessible external path."
+                            "Path relative to the workspace or an allowed root path."
                             ),
                             "limit",
                             ToolDefinitionFactory.positiveIntegerProperty(
@@ -100,7 +100,7 @@ public final class ReadFileTool implements AgentTool {
 
         try {
             Path file =
-                    paths.resolveExistingAnywhere(
+                    paths.resolveExisting(
                             pathNode.textValue()
                     );
 

@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 在可访问文件中替换第一次出现的指定文本。
+ * 在 allowedRoots 内的文件中替换第一次出现的指定文本。
  */
 public final class EditFileTool implements AgentTool {
 
@@ -29,7 +29,7 @@ public final class EditFileTool implements AgentTool {
                     Map.of(
                             "path",
                             ToolDefinitionFactory.stringProperty(
-                                    "Path relative to the workspace or an accessible external path."
+                            "Path relative to the workspace or an allowed root path."
                             ),
                             "old_text",
                             ToolDefinitionFactory.stringProperty(
@@ -111,7 +111,7 @@ public final class EditFileTool implements AgentTool {
 
         try {
             Path file =
-                    paths.resolveExistingAnywhere(
+                    paths.resolveExisting(
                             pathText
                     );
 

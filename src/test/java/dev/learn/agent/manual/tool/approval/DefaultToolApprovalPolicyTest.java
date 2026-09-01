@@ -5,6 +5,7 @@ package dev.learn.agent.manual.tool.approval;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.tool.ToolCall;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 // 引入当前测试使用的断言。
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -56,8 +59,6 @@ class DefaultToolApprovalPolicyTest {
     @Test
     void onlyExternalFileWritesRequireApproval()
             throws IOException {
-        DefaultToolApprovalPolicy policy =
-                newPolicy();
         Path insideTarget =
                 workspace.resolve("inside.txt");
         Path outsideDirectory =
@@ -67,6 +68,8 @@ class DefaultToolApprovalPolicyTest {
                 );
         Path outsideTarget =
                 outsideDirectory.resolve("outside.txt");
+        DefaultToolApprovalPolicy policy =
+                newPolicy(outsideDirectory);
 
         try {
             assertEquals(
@@ -119,6 +122,35 @@ class DefaultToolApprovalPolicyTest {
             Files.deleteIfExists(insideTarget);
             Files.deleteIfExists(outsideTarget);
             Files.deleteIfExists(outsideDirectory);
+        }
+    }
+
+    /** allowed roots 外的路径不能通过“需要审批”获得访问资格。 */
+    @Test
+    void outsideAllowedRootsIsNotClassifiedAsApprovableExternalWrite()
+            throws IOException {
+        DefaultToolApprovalPolicy policy =
+                newPolicy();
+        Path forbiddenDirectory =
+                Files.createTempDirectory(
+                        workspace.getParent(),
+                        "approval-policy-forbidden-"
+                );
+
+        try {
+            assertEquals(
+                    ToolApprovalRequirement.NOT_REQUIRED,
+                    policy.requirementFor(
+                            fileCall(
+                                    "write_file",
+                                    forbiddenDirectory.resolve(
+                                            "forbidden.txt"
+                                    )
+                            )
+                    )
+            );
+        } finally {
+            Files.deleteIfExists(forbiddenDirectory);
         }
     }
 
@@ -205,12 +237,27 @@ class DefaultToolApprovalPolicyTest {
         );
     }
 
-    /** 创建当前临时 Workspace 对应的默认策略。 */
-    private DefaultToolApprovalPolicy newPolicy()
-            throws IOException {
+    /** 创建包含 workspace 和额外 allowed roots 的测试策略。 */
+    private DefaultToolApprovalPolicy newPolicy(
+            Path... extraRoots
+    ) throws IOException {
+        List<Path> roots =
+                new ArrayList<>(
+                        List.of(workspace)
+                );
+        roots.addAll(
+                List.of(extraRoots)
+        );
         return new DefaultToolApprovalPolicy(
                 new WorkspacePathResolver(
-                        workspace
+                        new AgentState(
+                                false,
+                                ToolApprovalMode.BYPASS,
+                                workspace,
+                                workspace,
+                                roots,
+                                null
+                        )
                 )
         );
     }

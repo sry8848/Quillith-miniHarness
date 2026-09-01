@@ -401,16 +401,6 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             toolExecutions
                     )
             );
-            WorkspacePathResolver paths =
-                    new WorkspacePathResolver(
-                            workspace
-                    );
-            ContextManager contextManager =
-                    new ContextManager(
-                            client,
-                            "test-model",
-                            paths
-                    );
             AgentState agentState =
                     new AgentState(
                             false,
@@ -419,6 +409,16 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             workspace,
                             List.of(workspace),
                             workspace
+                    );
+            WorkspacePathResolver paths =
+                    new WorkspacePathResolver(
+                            agentState
+                    );
+            ContextManager contextManager =
+                    new ContextManager(
+                            client,
+                            "test-model",
+                            paths
                     );
             ToolApprovalGate approvalGate =
                     new ToolApprovalGate(

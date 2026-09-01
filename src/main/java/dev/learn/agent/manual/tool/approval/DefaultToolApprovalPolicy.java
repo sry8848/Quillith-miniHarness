@@ -26,7 +26,8 @@ public final class DefaultToolApprovalPolicy
             "mcp__";
 
     /*
-     * 文件审批只需要借助路径解析器判断最终目标位于 Workspace 内还是外。
+     * 文件审批只需要借助路径解析器判断最终目标位于 Workspace 内还是外；
+     * allowed roots 外的目标由解析器拒绝，不会被分类为可通过审批放行的外部写入。
      */
     private final WorkspacePathResolver paths;
 
@@ -93,7 +94,8 @@ public final class DefaultToolApprovalPolicy
      * 判断文件写入目标是否位于 Workspace 外。
      *
      * <p>无法解析的参数交给具体文件工具处理，避免把普通参数或 IO 错误
-     * 伪装成权限系统的硬拒绝。</p>
+     * 伪装成权限系统的硬拒绝。allowed roots 外的路径同样只返回 NOT_REQUIRED，
+     * 随后由文件工具返回真实边界错误。</p>
      *
      * @param toolCall write_file 或 edit_file 调用
      * @return Workspace 外返回 REQUIRED，否则返回 NOT_REQUIRED
@@ -114,12 +116,12 @@ public final class DefaultToolApprovalPolicy
             Path target =
                     switch (toolCall.name()) {
                         case "write_file" ->
-                                paths.resolveForWriteAnywhere(
+                                paths.resolveForWrite(
                                         pathNode.textValue()
                                 );
 
                         case "edit_file" ->
-                                paths.resolveExistingAnywhere(
+                                paths.resolveExisting(
                                         pathNode.textValue()
                                 );
 

@@ -413,10 +413,6 @@ class ManualAgentTest {
             backgroundScheduler =
                     new BackgroundTaskScheduler();
 
-            WorkspacePathResolver paths =
-                    new WorkspacePathResolver(
-                            workspace
-                    );
             AgentState agentState =
                     new AgentState(
                             memoryEnabled,
@@ -425,6 +421,10 @@ class ManualAgentTest {
                             workspace,
                             List.of(workspace),
                             workspace
+                    );
+            WorkspacePathResolver paths =
+                    new WorkspacePathResolver(
+                            agentState
                     );
             SystemPromptManager systemPromptManager =
                     new SystemPromptManager(

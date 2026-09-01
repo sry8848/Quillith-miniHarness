@@ -7,6 +7,8 @@ import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.models.messages.MessageParam;
 
 // 引入工作区路径边界和 JUnit 测试能力。
+import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -50,12 +52,21 @@ class ContextManagerTest {
 
         try {
             // 使用临时工作区组装本次测试的上下文管理器。
+            AgentState agentState =
+                    new AgentState(
+                            false,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
             ContextManager contextManager =
                     new ContextManager(
                             client,
                             "test-model",
                             new WorkspacePathResolver(
-                                    workspace
+                                    agentState
                             )
                     );
 

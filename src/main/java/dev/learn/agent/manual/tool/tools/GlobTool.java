@@ -20,7 +20,7 @@ import java.util.Objects;
 import java.util.stream.Stream;
 
 /**
- * 在工作区中查找符合 Glob 模式的路径。
+ * 在一个 allowed root 中查找符合 Glob 模式的路径。
  */
 public final class GlobTool implements AgentTool {
 
@@ -29,11 +29,15 @@ public final class GlobTool implements AgentTool {
     private static final Tool DEFINITION =
             ToolDefinitionFactory.create(
                     "glob",
-                    "Find workspace paths matching a glob pattern.",
+                    "Find paths matching a glob pattern within the workspace or one allowed root.",
                     Map.of(
                             "pattern",
                             ToolDefinitionFactory.stringProperty(
                                     "Glob pattern such as **/*.java."
+                            ),
+                            "root",
+                            ToolDefinitionFactory.stringProperty(
+                                    "Optional allowed root path; defaults to the workspace."
                             )
                     ),
                     List.of("pattern")
@@ -57,7 +61,7 @@ public final class GlobTool implements AgentTool {
     }
 
     /**
-     * 判断工作区路径扫描是否可以进入并发批次。
+     * 判断只读路径扫描是否可以进入并发批次。
      *
      * @return 固定返回 true，因为该工具不会修改工作区或内部状态
      */
@@ -85,6 +89,38 @@ public final class GlobTool implements AgentTool {
         String pattern =
                 patternNode.textValue();
 
+        Path configuredRoot;
+        JsonNode rootNode =
+                input.get("root");
+        if (rootNode == null) {
+            configuredRoot = paths.workspace();
+        } else if (!rootNode.isTextual()
+                || rootNode.textValue().isBlank()) {
+            return ToolExecutionResult.failure(
+                    "Error: root must be a non-blank allowed directory path"
+            );
+        } else {
+            try {
+                configuredRoot =
+                        paths.resolveExisting(
+                                rootNode.textValue()
+                        );
+            } catch (IOException exception) {
+                return ToolExecutionResult.failure(
+                        "Error: root is not an allowed directory: "
+                                + exception.getMessage()
+                );
+            }
+        }
+
+        final Path searchRoot = configuredRoot;
+
+        if (!Files.isDirectory(searchRoot)) {
+            return ToolExecutionResult.failure(
+                    "Error: root is not a directory"
+            );
+        }
+
         final PathMatcher matcher;
 
         try {
@@ -100,22 +136,24 @@ public final class GlobTool implements AgentTool {
             );
         }
 
-        Path workspace =
-                paths.workspace();
-
         try (Stream<Path> stream =
-                     Files.walk(workspace)) {
+                     Files.walk(searchRoot)) {
             /*
              * Files.walk 默认不跟随目录符号链接，
-             * 因而不会借助链接遍历到工作区外。
+             * 但仍过滤真实目标，避免把指向 allowed roots 外的链接暴露给模型。
              */
             List<String> matches =
                     stream.skip(1)
                             .map(
-                                    workspace::relativize
+                                    searchRoot::relativize
                             )
                             .filter(
                                     matcher::matches
+                            )
+                            .filter(
+                                    path -> isInsideAllowedRoots(
+                                            searchRoot.resolve(path)
+                                    )
                             )
                             .map(
                                     path -> path.toString()
@@ -167,6 +205,19 @@ public final class GlobTool implements AgentTool {
             return ToolExecutionResult.failure(
                     "Error: " + exception.getMessage()
             );
+        }
+    }
+
+    /** 检查候选路径的真实目标仍位于 allowed roots 内。 */
+    private boolean isInsideAllowedRoots(
+            Path candidate
+    ) {
+        try {
+            return paths.isInsideAllowedRoots(
+                    candidate.toRealPath()
+            );
+        } catch (IOException exception) {
+            return false;
         }
     }
 }

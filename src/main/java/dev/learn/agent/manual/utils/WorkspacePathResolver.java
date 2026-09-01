@@ -1,170 +1,131 @@
 package dev.learn.agent.manual.utils;
 
+import dev.learn.agent.manual.AgentState;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 
 /**
- * 以 Workspace 为相对路径基准，统一处理路径规范化和符号链接解析。
+ * 以 Workspace 为相对路径基准，并按 AgentState.allowedRoots() 约束文件工具的真实路径。
  *
- * <p>resolveExisting 和 resolveForWrite 保留给应用内部数据，继续强制
- * Workspace 边界；文件工具使用 Anywhere 方法，由上层审批策略负责判断
- * Workspace 内外。</p>
- *
- * <p>这里不是操作系统沙盒。它只负责路径解析和边界分类。</p>
+ * <p>这里不是操作系统沙盒。它只负责路径解析和 allowed-roots 边界分类；Bash 等宿主进程
+ * 工具仍由各自的执行环境负责边界。</p>
  */
 public final class WorkspacePathResolver {
 
-    /*
-     * 保存工作区的真实路径。
+    /* Session 创建阶段已经确定路径集合，解析器只持有共享状态，不复制自己的边界配置。 */
+    private final AgentState agentState;
+
+    /**
+     * 创建共享路径解析器。
      *
-     * toRealPath() 会解析工作区自身包含的符号链接。
+     * @param agentState 当前 CLI Session 的路径状态
+     * @throws IOException workspace 或 allowed root 不是可用目录
      */
-    private final Path workspace;
-
     public WorkspacePathResolver(
-            Path workspace
+            AgentState agentState
     ) throws IOException {
-        this.workspace =
+        this.agentState =
                 Objects.requireNonNull(
-                                workspace,
-                                "Workspace 不能为空"
-                        )
-                        .toRealPath();
+                        agentState,
+                        "AgentState 不能为空"
+                );
 
-        if (!Files.isDirectory(this.workspace)) {
+        /*
+         * 这些路径应在 Session 装配阶段已经转成真实绝对目录；这里仅验证装配结果可用，
+         * 不检查集合长度，也不把多根配置收窄成单根配置。
+         */
+        if (!Files.isDirectory(agentState.workspace())) {
             throw new IllegalArgumentException(
                     "Workspace 不是目录："
-                            + this.workspace
+                            + agentState.workspace()
             );
+        }
+
+        for (Path allowedRoot : agentState.allowedRoots()) {
+            if (!Files.isDirectory(allowedRoot)) {
+                throw new IllegalArgumentException(
+                        "Allowed root 不是目录："
+                                + allowedRoot
+                );
+            }
         }
     }
 
+    /**
+     * 返回相对路径解析基准 Workspace。
+     */
     public Path workspace() {
-        return workspace;
+        return agentState.workspace();
     }
 
     /**
-     * 解析必须已经存在且位于 Workspace 内的目标。
+     * 返回当前 Session 的可访问目录集合。
+     */
+    public List<Path> allowedRoots() {
+        return agentState.allowedRoots();
+    }
+
+    /**
+     * 解析已经存在且位于任一 allowed root 内的目标。
+     *
+     * @param userPath 以 workspace 为相对基准的路径，或绝对路径
+     * @return 解析符号链接后的真实目标
+     * @throws IOException 目标不存在或不在 allowed roots 内
      */
     public Path resolveExisting(
             String userPath
     ) throws IOException {
-        return resolveExisting(
-                userPath,
-                true
-        );
-    }
-
-    /**
-     * 解析必须已经存在的目标，允许目标位于 Workspace 外。
-     *
-     * <p>相对路径仍然以 Workspace 为基准，目标中的符号链接会被解析为
-     * 真实路径，调用方可以再使用 isInsideWorkspace() 进行分类。</p>
-     */
-    public Path resolveExistingAnywhere(
-            String userPath
-    ) throws IOException {
-        return resolveExisting(
-                userPath,
-                false
-        );
-    }
-
-    /**
-     * 按指定边界策略解析已经存在的目标。
-     */
-    private Path resolveExisting(
-            String userPath,
-            boolean enforceWorkspace
-    ) throws IOException {
         Path target =
                 resolveLexically(
-                        userPath,
-                        enforceWorkspace
+                        userPath
                 );
-
-        /*
-         * toRealPath() 会解析目标路径中的符号链接。
-         */
+        /* 先解析真实目标，再做边界检查，以支持 allowed root 外的链接指回允许目录。 */
         Path realTarget =
                 target.toRealPath();
-
-        if (enforceWorkspace) {
-            ensureInsideWorkspace(
-                    realTarget,
-                    userPath
-            );
-        }
-
+        ensureInsideAllowedRoots(
+                realTarget,
+                userPath
+        );
         return realTarget;
     }
 
     /**
-     * 解析允许尚未存在且位于 Workspace 内的写入目标。
+     * 解析允许尚未存在且位于任一 allowed root 内的写入目标。
+     *
+     * @param userPath 以 workspace 为相对基准的路径，或绝对路径
+     * @return 可写入的真实目标路径
+     * @throws IOException 目标父目录不存在或目标不在 allowed roots 内
      */
     public Path resolveForWrite(
             String userPath
     ) throws IOException {
-        return resolveForWrite(
-                userPath,
-                true
-        );
-    }
-
-    /**
-     * 解析允许尚未存在的写入目标，允许目标位于 Workspace 外。
-     *
-     * <p>该方法仍然解析已存在目标和最近的真实父目录，
-     * 只是不会因为 Workspace 外路径直接失败。</p>
-     */
-    public Path resolveForWriteAnywhere(
-            String userPath
-    ) throws IOException {
-        return resolveForWrite(
-                userPath,
-                false
-        );
-    }
-
-    /**
-     * 按指定边界策略解析写入目标。
-     */
-    private Path resolveForWrite(
-            String userPath,
-            boolean enforceWorkspace
-    ) throws IOException {
         Path target =
                 resolveLexically(
-                        userPath,
-                        enforceWorkspace
+                        userPath
                 );
 
-        /*
-         * 已存在的文件必须解析自身的符号链接。
-         */
+        /* 已存在的文件必须解析自身的符号链接。 */
         if (Files.exists(
                 target,
                 LinkOption.NOFOLLOW_LINKS
         )) {
             Path realTarget =
                     target.toRealPath();
-
-            if (enforceWorkspace) {
-                ensureInsideWorkspace(
-                        realTarget,
-                        userPath
-                );
-            }
-
+            ensureInsideAllowedRoots(
+                    realTarget,
+                    userPath
+            );
             return realTarget;
         }
 
         /*
-         * 新文件本身还不存在，因此向上寻找最近的已存在父目录，
-         * 再检查这个父目录是否通过符号链接逃离工作区。
+         * 新文件本身还不存在，因此向上寻找最近的已存在父目录，再检查父目录的真实位置。
+         * 这样 workspace 内的目录链接无法把新文件写到 allowed roots 外。
          */
         Path existingParent =
                 target.getParent();
@@ -187,13 +148,10 @@ public final class WorkspacePathResolver {
 
         Path realParent =
                 existingParent.toRealPath();
-
-        if (enforceWorkspace) {
-            ensureInsideWorkspace(
-                    realParent,
-                    userPath
-            );
-        }
+        ensureInsideAllowedRoots(
+                realParent,
+                userPath
+        );
 
         Path unresolvedSuffix =
                 existingParent.relativize(
@@ -205,22 +163,18 @@ public final class WorkspacePathResolver {
                                 unresolvedSuffix
                         )
                         .normalize();
-
-        if (enforceWorkspace) {
-            ensureInsideWorkspace(
-                    resolvedTarget,
-                    userPath
-            );
-        }
-
+        ensureInsideAllowedRoots(
+                resolvedTarget,
+                userPath
+        );
         return resolvedTarget;
     }
 
     /**
      * 判断解析后的目标是否位于当前 Workspace 内。
      *
-     * <p>调用方应传入本类解析方法返回的绝对路径；解析方法已经处理了
-     * 已存在目标和父目录中的符号链接。</p>
+     * @param target 已经解析的目标路径
+     * @return 目标是否位于 workspace 内
      */
     public boolean isInsideWorkspace(
             Path target
@@ -232,37 +186,63 @@ public final class WorkspacePathResolver {
 
         return target.toAbsolutePath()
                 .normalize()
-                .startsWith(workspace);
+                .startsWith(
+                        workspace()
+                                .toAbsolutePath()
+                                .normalize()
+                );
     }
 
     /**
-     * 以 Workspace 为相对路径基准进行规范化，按需执行 Workspace 边界检查。
+     * 判断解析后的目标是否位于任一 allowed root 内。
+     *
+     * @param target 已经解析的目标路径
+     * @return 目标是否位于允许目录集合内
      */
-    private Path resolveLexically(
-            String userPath,
-            boolean enforceWorkspace
-    ) throws IOException {
-        Path target =
-                workspace.resolve(userPath)
+    public boolean isInsideAllowedRoots(
+            Path target
+    ) {
+        Objects.requireNonNull(
+                target,
+                "目标路径不能为空"
+        );
+
+        Path normalizedTarget =
+                target.toAbsolutePath()
                         .normalize();
-
-        if (enforceWorkspace) {
-            ensureInsideWorkspace(
-                    target,
-                    userPath
-            );
-        }
-
-        return target;
+        return allowedRoots().stream()
+                .map(
+                        root -> root.toAbsolutePath()
+                                .normalize()
+                )
+                .anyMatch(
+                        normalizedTarget::startsWith
+                );
     }
 
-    private void ensureInsideWorkspace(
+    /**
+     * 以 Workspace 为相对路径基准进行规范化，不在此阶段执行真实路径边界判断。
+     */
+    private Path resolveLexically(
+            String userPath
+    ) {
+        return workspace()
+                .resolve(
+                        Objects.requireNonNull(
+                                userPath,
+                                "路径不能为空"
+                        )
+                )
+                .normalize();
+    }
+
+    private void ensureInsideAllowedRoots(
             Path target,
             String userPath
     ) throws IOException {
-        if (!target.startsWith(workspace)) {
+        if (!isInsideAllowedRoots(target)) {
             throw new IOException(
-                    "Path escapes workspace: "
+                    "Path escapes allowed roots: "
                             + userPath
             );
         }

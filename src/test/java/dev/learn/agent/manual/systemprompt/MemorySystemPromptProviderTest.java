@@ -39,9 +39,18 @@ class MemorySystemPromptProviderTest {
         AnthropicClient client =
                 testClient();
         try {
+            AgentState agentState =
+                    new AgentState(
+                            true,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            workspace
+                            agentState
                     );
             MemoryRepository repository =
                     new MemoryRepository(
@@ -55,16 +64,6 @@ class MemorySystemPromptProviderTest {
                             "正文不应在索引注入时加载"
                     )
             );
-            AgentState agentState =
-                    new AgentState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-
             MemoryRuntime runtime =
                     new MemoryRuntime(
                             agentState,
@@ -125,9 +124,18 @@ class MemorySystemPromptProviderTest {
         AnthropicClient client =
                 testClient();
         try {
+            AgentState agentState =
+                    new AgentState(
+                            true,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            workspace
+                            agentState
                     );
             MemoryRepository repository =
                     new MemoryRepository(
@@ -141,16 +149,6 @@ class MemorySystemPromptProviderTest {
                             "正文"
                     )
             );
-            AgentState agentState =
-                    new AgentState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-
             MemoryRuntime runtime =
                     new MemoryRuntime(
                             agentState,
@@ -227,14 +225,16 @@ class MemorySystemPromptProviderTest {
                             List.of(workspace),
                             null
                     );
+            WorkspacePathResolver paths =
+                    new WorkspacePathResolver(
+                            agentState
+                    );
             MemoryRuntime runtime =
                     new MemoryRuntime(
                             agentState,
                             client,
                             "test-model",
-                            new WorkspacePathResolver(
-                                    workspace
-                            )
+                            paths
                     );
 
             assertEquals(

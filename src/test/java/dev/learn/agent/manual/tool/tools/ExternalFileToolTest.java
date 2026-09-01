@@ -4,7 +4,9 @@ package dev.learn.agent.manual.tool.tools;
 // 引入 JSON 输入、文件工具和 Workspace 路径解析类型。
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
+import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,10 +15,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 // 引入当前测试使用的断言。
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 验证文件工具在审批层放行后确实能够操作 Workspace 外路径。
@@ -33,10 +37,6 @@ class ExternalFileToolTest {
     @Test
     void fileToolsCanOperateOnExternalPaths()
             throws IOException {
-        WorkspacePathResolver paths =
-                new WorkspacePathResolver(
-                        workspace
-                );
         Path outsideDirectory =
                 Files.createTempDirectory(
                         workspace.getParent(),
@@ -44,6 +44,20 @@ class ExternalFileToolTest {
                 );
         Path file =
                 outsideDirectory.resolve("external.txt");
+        WorkspacePathResolver paths =
+                new WorkspacePathResolver(
+                        new AgentState(
+                                false,
+                                ToolApprovalMode.BYPASS,
+                                workspace,
+                                workspace,
+                                List.of(
+                                        workspace,
+                                        outsideDirectory
+                                ),
+                                null
+                        )
+                );
 
         WriteFileTool writeFileTool =
                 new WriteFileTool(
@@ -103,6 +117,76 @@ class ExternalFileToolTest {
         } finally {
             Files.deleteIfExists(file);
             Files.deleteIfExists(outsideDirectory);
+        }
+    }
+
+    /** allowed roots 外的目标即使直接执行，也不能被三个文件工具访问。 */
+    @Test
+    void fileToolsRejectPathsOutsideAllowedRoots()
+            throws IOException {
+        Path forbiddenDirectory =
+                Files.createTempDirectory(
+                        workspace.getParent(),
+                        "external-file-tool-forbidden-"
+                );
+        Path existingFile =
+                forbiddenDirectory.resolve("existing.txt");
+        Path newFile =
+                forbiddenDirectory.resolve("new.txt");
+        Files.writeString(
+                existingFile,
+                "before"
+        );
+        WorkspacePathResolver paths =
+                new WorkspacePathResolver(
+                        new AgentState(
+                                false,
+                                ToolApprovalMode.BYPASS,
+                                workspace,
+                                workspace,
+                                List.of(workspace),
+                                null
+                        )
+                );
+
+        try {
+            ToolExecutionResult readResult =
+                    new ReadFileTool(
+                            paths
+                    ).execute(
+                            pathInput(existingFile)
+                    );
+            ToolExecutionResult writeResult =
+                    new WriteFileTool(
+                            paths
+                    ).execute(
+                            writeInput(
+                                    newFile,
+                                    "blocked"
+                            )
+                    );
+            ToolExecutionResult editResult =
+                    new EditFileTool(
+                            paths
+                    ).execute(
+                            editInput(
+                                    existingFile,
+                                    "before",
+                                    "after"
+                            )
+                    );
+
+            assertTrue(readResult.error(), readResult.content());
+            assertTrue(writeResult.error(), writeResult.content());
+            assertTrue(editResult.error(), editResult.content());
+            assertEquals(
+                    "before",
+                    Files.readString(existingFile)
+            );
+        } finally {
+            Files.deleteIfExists(existingFile);
+            Files.deleteIfExists(newFile);
+            Files.deleteIfExists(forbiddenDirectory);
         }
     }
 

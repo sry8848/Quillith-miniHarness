@@ -3,7 +3,9 @@ package dev.learn.agent.manual.task;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
+import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.tool.tools.ClaimTaskTool;
 import dev.learn.agent.manual.tool.tools.CompleteTaskTool;
 import dev.learn.agent.manual.tool.tools.CreateTaskTool;
@@ -179,7 +181,18 @@ class TaskSystemTest {
 
     /** 创建模拟应用重启的 Store。 */
     private TaskStore newStore() throws IOException {
-        return new TaskStore(new WorkspacePathResolver(workspace));
+        return new TaskStore(
+                new WorkspacePathResolver(
+                        new AgentState(
+                                false,
+                                ToolApprovalMode.BYPASS,
+                                workspace,
+                                workspace,
+                                List.of(workspace),
+                                null
+                        )
+                )
+        );
     }
 
     /** 解析测试工具输入。 */
