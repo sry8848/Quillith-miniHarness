@@ -4,7 +4,10 @@ import dev.learn.agent.manual.cli.ApplicationOptions;
 import dev.learn.agent.manual.cli.ExecRunner;
 import dev.learn.agent.manual.cli.InteractiveRunner;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
+import dev.learn.agent.manual.utils.GitRepositoryResolver;
 import org.apache.commons.io.output.TeeOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -16,6 +19,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Scanner;
 
 /**
@@ -24,6 +28,11 @@ import java.util.Scanner;
  * 负责进程级终端、输入和 Runtime 生命周期，不承载 Agent Turn 逻辑。
  */
 public final class ManualAgentApplication {
+
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(
+                    ManualAgentApplication.class
+            );
 
     /**
      * 解析启动模式，并运行交互会话或一条 exec 任务。
@@ -43,19 +52,53 @@ public final class ManualAgentApplication {
                 Path.of("")
                         .toRealPath();
 
-        // 2. 只有输入生命周期不同：Interactive 持续读取，Exec 只提交一次。
+        // 2. 当前固定用户目录配置值保持与旧实现一致，后续只替换这一配置来源。
+        Path agentHome = cwd;
+
+        // 3. 启动时以 workspace 发现 Git 根目录；未发现仓库仍允许为空。
+        Path gitRoot = null;
+        try {
+            gitRoot =
+                    GitRepositoryResolver.findRoot(
+                            cwd
+                    );
+        } catch (IOException exception) {
+            LOGGER.debug(
+                    "未发现可用的 Git 仓库，跳过 Git MCP 注册：{}",
+                    exception.getMessage()
+            );
+        }
+
+        // 4. 集合只用一个初始 workspace，不把它实现成只能单目录的限制。
+        List<Path> allowedRoots =
+                List.of(cwd);
+
+        // 5. 一次启动只创建一份 Session 状态，父 Agent 和 SubAgent 共享它。
+        AgentState agentState =
+                new AgentState(
+                        options.memoryEnabled(),
+                        options.mode() == ApplicationOptions.Mode.INTERACTIVE
+                                ? ToolApprovalMode.ASK
+                                : ToolApprovalMode.BYPASS,
+                        agentHome,
+                        cwd,
+                        allowedRoots,
+                        gitRoot
+                );
+
+        // 6. 只有输入生命周期不同：Interactive 持续读取，Exec 只提交一次。
         int exitCode =
                 switch (options.mode()) {
                     case INTERACTIVE -> {
                         runInteractive(
-                                cwd,
+                                agentState,
                                 options
                         );
                         yield 0;
                     }
                     case EXEC ->
                             runExec(
-                                    cwd,
+                                    agentState,
                                     options
                             );
                 };
@@ -69,14 +112,15 @@ public final class ManualAgentApplication {
     /**
      * 保持现有 transcript、Scanner 和 ASK 审批行为运行交互模式。
      *
-     * @param cwd 当前工作目录
+     * @param agentState 当前 CLI Session 状态
      * @param options 已解析的交互模式选项
      * @throws IOException transcript 或 Runtime 初始化失败
      */
     private static void runInteractive(
-            Path cwd,
+            AgentState agentState,
             ApplicationOptions options
     ) throws IOException {
+        Path cwd = agentState.workspace();
         // 1. Interactive 继续保存完整终端 transcript，保持原有本地会话行为。
         Path transcriptDirectory =
                 cwd.resolve(
@@ -139,9 +183,7 @@ public final class ManualAgentApplication {
         try {
             try (AgentRuntime runtime =
                          AgentRuntime.create(
-                                 cwd,
-                                 options.memoryEnabled(),
-                                 ToolApprovalMode.ASK,
+                                 agentState,
                                  scanner
                          )) {
                 new InteractiveRunner(
@@ -158,21 +200,19 @@ public final class ManualAgentApplication {
     /**
      * 在 Harbor 隔离环境中使用现有 BYPASS 模式执行一条任务。
      *
-     * @param cwd 当前工作目录
+     * @param agentState 当前 CLI Session 状态
      * @param options 已解析的 exec 模式选项
      * @return 正常完成返回 0，不可恢复 Provider Error 返回 1
      * @throws IOException Runtime 初始化或 Turn 记忆读写失败
      */
     private static int runExec(
-            Path cwd,
+            AgentState agentState,
             ApplicationOptions options
     ) throws IOException {
         // 1. Exec 不创建 Scanner 和 workspace transcript，输出直接交给 Harbor 捕获。
         try (AgentRuntime runtime =
                      AgentRuntime.create(
-                             cwd,
-                             options.memoryEnabled(),
-                             ToolApprovalMode.BYPASS,
+                             agentState,
                              null
                      )) {
             // 2. BYPASS 复用现有权限模式；安全边界由不暴露宿主目录的 Harbor 环境提供。

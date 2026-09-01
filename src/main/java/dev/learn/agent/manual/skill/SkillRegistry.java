@@ -1,7 +1,7 @@
 package dev.learn.agent.manual.skill;
 
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
-import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptProvider;
 
 import java.io.IOException;
@@ -136,7 +136,7 @@ public final class SkillRegistry
      */
     @Override
     public Optional<String> load(
-            RuntimeContext runtimeContext
+            AgentState agentState
     ) {
         // Skill catalog 是模型选择是否调用 load_skill 的第一层索引。
         return Optional.of(

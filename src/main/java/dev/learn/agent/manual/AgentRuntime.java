@@ -23,22 +23,17 @@ import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.systemprompt.IdentitySystemPromptProvider;
 import dev.learn.agent.manual.systemprompt.MemorySystemPromptProvider;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
-import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.systemprompt.WorkspaceSystemPromptProvider;
 import dev.learn.agent.manual.task.TaskStore;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.approval.DefaultToolApprovalPolicy;
 import dev.learn.agent.manual.tool.approval.ToolApprovalGate;
-import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.tool.approval.ToolApprovalPolicy;
 import dev.learn.agent.manual.tool.entity.TodoState;
 import dev.learn.agent.manual.tool.tools.*;
-import dev.learn.agent.manual.utils.GitRepositoryResolver;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import io.modelcontextprotocol.spec.McpSchema;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -50,11 +45,6 @@ import java.util.Scanner;
  * 创建并持有一次交互式 Agent 进程使用的长期资源。
  */
 public final class AgentRuntime implements AutoCloseable {
-
-    private static final Logger LOGGER =
-            LoggerFactory.getLogger(
-                    AgentRuntime.class
-            );
 
     private static final String BASE_URL =
             "https://dashscope.aliyuncs.com/apps/anthropic";
@@ -99,41 +89,21 @@ public final class AgentRuntime implements AutoCloseable {
     /**
      * 按当前应用装配顺序创建完整 Runtime。
      *
-     * @param cwd 当前工作目录
-     * @param memoryEnabled 父 Agent 的初始记忆开关
-     * @param approvalMode 当前进程使用的现有工具审批模式
+     * @param agentState 当前 CLI Session 的唯一状态
      * @param scanner ASK 模式共享的终端输入，BYPASS 模式传 null
      * @return 已完成依赖装配的 Runtime
      * @throws IOException 工作区或 Runtime 资源初始化失败
      */
     public static AgentRuntime create(
-            Path cwd,
-            boolean memoryEnabled,
-            ToolApprovalMode approvalMode,
+            AgentState agentState,
             Scanner scanner
     ) throws IOException {
         Objects.requireNonNull(
-                cwd,
-                "cwd 不能为空"
+                agentState,
+                "AgentState 不能为空"
         );
-        Path gitRoot = null;
-        try {
-            gitRoot =
-                    GitRepositoryResolver.findRoot(
-                            cwd
-                    );
-        } catch (IOException exception) {
-            LOGGER.debug(
-                    "未发现可用的 Git 仓库，跳过 Git MCP 注册：{}",
-                    exception.getMessage()
-            );
-        }
-
-        RuntimeContext runtimeContext =
-                new RuntimeContext(
-                        cwd,
-                        gitRoot
-                );
+        Path workspace = agentState.workspace();
+        Path gitRoot = agentState.gitRoot();
         Path bashExecutable =
                 Path.of(
                         "C:\\Windows\\System32\\bash.exe"
@@ -163,11 +133,11 @@ public final class AgentRuntime implements AutoCloseable {
 
         WorkspacePathResolver paths =
                 new WorkspacePathResolver(
-                        cwd
+                        workspace
                 );
         SkillRegistry skillRegistry =
                 new SkillRegistry(
-                        cwd.resolve(
+                        workspace.resolve(
                                 "skills"
                         )
                 );
@@ -182,7 +152,7 @@ public final class AgentRuntime implements AutoCloseable {
                 new BackgroundTaskScheduler();
         BashTool parentBashTool =
                 new BashTool(
-                        cwd,
+                        workspace,
                         bashExecutable,
                         parentBackgroundScheduler
                 );
@@ -190,7 +160,7 @@ public final class AgentRuntime implements AutoCloseable {
                 new BackgroundTaskScheduler();
         BashTool subagentBashTool =
                 new BashTool(
-                        cwd,
+                        workspace,
                         bashExecutable,
                         subagentBackgroundScheduler
                 );
@@ -294,7 +264,7 @@ public final class AgentRuntime implements AutoCloseable {
         ToolApprovalGate approvalGate =
                 new ToolApprovalGate(
                         approvalPolicy,
-                        approvalMode,
+                        agentState.approvalMode(),
                         scanner
                 );
         LargeOutputHook largeOutputHook =
@@ -304,7 +274,7 @@ public final class AgentRuntime implements AutoCloseable {
                 new HookRegistry();
         hookRegistry.registerAll(
                 new WorkspaceLoggingHook(
-                        cwd
+                        workspace
                 ),
                 toolLoggingHook,
                 largeOutputHook,
@@ -335,7 +305,7 @@ public final class AgentRuntime implements AutoCloseable {
                         .build();
         MemoryRuntime memoryRuntime =
                 new MemoryRuntime(
-                        memoryEnabled,
+                        agentState.memoryEnabled(),
                         client,
                         MODEL,
                         paths
@@ -371,7 +341,7 @@ public final class AgentRuntime implements AutoCloseable {
                 );
         subagentSystemPromptManager.refreshFrom(
                 RefreshScope.APPLICATION,
-                runtimeContext
+                agentState
         );
 
         AgentLoop subagentLoop =
@@ -379,7 +349,7 @@ public final class AgentRuntime implements AutoCloseable {
                         client,
                         MODEL,
                         subagentSystemPromptManager,
-                        runtimeContext,
+                        agentState,
                         subagentToolRegistry,
                         approvalGate,
                         subagentHookRegistry,
@@ -409,7 +379,7 @@ public final class AgentRuntime implements AutoCloseable {
                 );
         parentSystemPromptManager.refreshFrom(
                 RefreshScope.APPLICATION,
-                runtimeContext
+                agentState
         );
 
         AgentLoop agentLoop =
@@ -417,7 +387,7 @@ public final class AgentRuntime implements AutoCloseable {
                         client,
                         MODEL,
                         parentSystemPromptManager,
-                        runtimeContext,
+                        agentState,
                         toolRegistry,
                         approvalGate,
                         hookRegistry,
@@ -433,7 +403,7 @@ public final class AgentRuntime implements AutoCloseable {
                         memoryRuntime,
                         hookRegistry,
                         parentSystemPromptManager,
-                        runtimeContext
+                        agentState
                 );
 
         return new AgentRuntime(

@@ -32,7 +32,6 @@ import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryState;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
-import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.ToolCall;
@@ -121,8 +120,8 @@ public final class AgentLoop {
     // 保存动态 System Prompt 的刷新入口。
     private final SystemPromptManager systemPromptManager;
 
-    // 保存生成动态 System Prompt 时读取的真实运行状态。
-    private final RuntimeContext runtimeContext;
+    // 保存生成动态 System Prompt 时读取的当前 Session 状态。
+    private final AgentState agentState;
 
     // 保存可供模型调用的工具注册表。
     private final ToolRegistry toolRegistry;
@@ -157,7 +156,7 @@ public final class AgentLoop {
      * @param client Anthropic 客户端
      * @param model 模型标识
      * @param systemPromptManager 动态 System Prompt 管理器
-     * @param runtimeContext 当前运行上下文
+     * @param agentState 当前 Session 状态
      * @param toolRegistry 工具注册表
      * @param approvalGate 工具执行前的审批边界
      * @param hookRegistry Hook 注册表
@@ -173,7 +172,7 @@ public final class AgentLoop {
             AnthropicClient client,
             String model,
             SystemPromptManager systemPromptManager,
-            RuntimeContext runtimeContext,
+            AgentState agentState,
             ToolRegistry toolRegistry,
             ToolApprovalGate approvalGate,
             HookRegistry hookRegistry,
@@ -204,11 +203,11 @@ public final class AgentLoop {
                         "SystemPromptManager 不能为空"
                 );
 
-        // 校验并保存运行上下文。
-        this.runtimeContext =
+        // 校验并保存当前 Session 状态。
+        this.agentState =
                 Objects.requireNonNull(
-                        runtimeContext,
-                        "RuntimeContext 不能为空"
+                        agentState,
+                        "AgentState 不能为空"
                 );
 
         // 校验并保存工具注册表。
@@ -309,7 +308,7 @@ public final class AgentLoop {
         // 设计意图：一次 run 对应一个新用户回合或子任务，必须从该边界更新动态提示词。
         systemPromptManager.refreshFrom(
                 RefreshScope.TURN,
-                runtimeContext
+                agentState
         );
 
         // 初始化当前回合已经执行的输出续写次数。
@@ -1933,7 +1932,7 @@ public final class AgentLoop {
         SystemPrompt systemPrompt =
                 systemPromptManager.refreshFrom(
                         RefreshScope.MODEL_CALL,
-                        runtimeContext
+                        agentState
                 );
 
         // 使用最新完整 System Prompt、真实历史和工具定义初始化请求构建器。

@@ -1,5 +1,7 @@
 package dev.learn.agent.manual.systemprompt;
 
+import dev.learn.agent.manual.AgentState;
+
 import java.util.Optional;
 
 /**
@@ -25,10 +27,10 @@ public interface SystemPromptProvider {
     /**
      * 根据当前真实状态生成模型可见内容。
      *
-     * @param runtimeContext 当前程序真实状态
+     * @param agentState 当前 Session 的真实状态
      * @return 当前内容；空值表示删除已有 Item
      */
     Optional<String> load(
-            RuntimeContext runtimeContext
+            AgentState agentState
     );
 }

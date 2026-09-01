@@ -15,7 +15,6 @@ import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
-import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.approval.DefaultToolApprovalPolicy;
@@ -418,9 +417,13 @@ class ManualAgentTest {
                     new WorkspacePathResolver(
                             workspace
                     );
-            RuntimeContext runtimeContext =
-                    new RuntimeContext(
+            AgentState agentState =
+                    new AgentState(
+                            memoryEnabled,
+                            ToolApprovalMode.BYPASS,
                             workspace,
+                            workspace,
+                            List.of(workspace),
                             workspace
                     );
             SystemPromptManager systemPromptManager =
@@ -439,7 +442,7 @@ class ManualAgentTest {
                             client,
                             "test-model",
                             systemPromptManager,
-                            runtimeContext,
+                            agentState,
                             new ToolRegistry(),
                             new ToolApprovalGate(
                                     new DefaultToolApprovalPolicy(
@@ -473,7 +476,7 @@ class ManualAgentTest {
                             memoryRuntime,
                             hookRegistry,
                             systemPromptManager,
-                            runtimeContext
+                            agentState
                     );
         }
 

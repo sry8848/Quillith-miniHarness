@@ -1,5 +1,6 @@
 package dev.learn.agent.manual.systemprompt;
 
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 
 import java.util.Objects;
@@ -64,7 +65,7 @@ public final class MemorySystemPromptProvider
      */
     @Override
     public Optional<String> load(
-            RuntimeContext runtimeContext
+            AgentState agentState
     ) {
         return memoryRuntime.loadIndex()
                 .map(

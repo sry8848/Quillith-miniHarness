@@ -12,11 +12,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.learn.agent.manual.AgentLoop;
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
-import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.AgentTool;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
@@ -419,9 +419,13 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             ToolApprovalMode.BYPASS,
                             null
                     );
-            RuntimeContext runtimeContext =
-                    new RuntimeContext(
+            AgentState agentState =
+                    new AgentState(
+                            false,
+                            ToolApprovalMode.BYPASS,
                             workspace,
+                            workspace,
+                            List.of(workspace),
                             workspace
                     );
             this.agentLoop =
@@ -431,7 +435,7 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             new SystemPromptManager(
                                     List.of()
                             ),
-                            runtimeContext,
+                            agentState,
                             toolRegistry,
                             approvalGate,
                             new HookRegistry(),

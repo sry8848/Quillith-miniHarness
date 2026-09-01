@@ -1,5 +1,7 @@
 package dev.learn.agent.manual.systemprompt;
 
+import dev.learn.agent.manual.AgentState;
+
 import java.util.Optional;
 
 /**
@@ -72,7 +74,7 @@ public final class IdentitySystemPromptProvider
      */
     @Override
     public Optional<String> load(
-            RuntimeContext runtimeContext
+            AgentState agentState
     ) {
         return Optional.of(content);
     }

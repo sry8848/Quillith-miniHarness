@@ -1,5 +1,7 @@
 package dev.learn.agent.manual.systemprompt;
 
+import dev.learn.agent.manual.AgentState;
+
 import java.util.Optional;
 
 /**
@@ -33,19 +35,19 @@ public final class WorkspaceSystemPromptProvider
     }
 
     /**
-     * 从 RuntimeContext 派生模型需要看到的工作目录和 Git 仓库目录。
+     * 从 AgentState 派生模型需要看到的工作目录和 Git 仓库目录。
      */
     @Override
     public Optional<String> load(
-            RuntimeContext runtimeContext
+            AgentState agentState
     ) {
         return Optional.of(
                 "当前工作目录："
-                        + runtimeContext.cwd()
+                        + agentState.workspace()
                         + "\nGit 仓库根目录："
-                        + (runtimeContext.gitRoot() == null
+                        + (agentState.gitRoot() == null
                         ? "未发现"
-                        : runtimeContext.gitRoot().toString())
+                        : agentState.gitRoot().toString())
         );
     }
 }

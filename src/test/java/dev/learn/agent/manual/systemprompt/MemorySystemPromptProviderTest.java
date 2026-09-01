@@ -2,11 +2,13 @@ package dev.learn.agent.manual.systemprompt;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import dev.learn.agent.manual.AgentState;
 import dev.learn.agent.manual.memory.MemoryEntry;
 import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.memory.MemoryType;
+import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -73,8 +75,12 @@ class MemorySystemPromptProviderTest {
             SystemPrompt prompt =
                     manager.refreshFrom(
                             RefreshScope.APPLICATION,
-                            new RuntimeContext(
+                            new AgentState(
+                                    true,
+                                    ToolApprovalMode.BYPASS,
                                     workspace,
+                                    workspace,
+                                    List.of(workspace),
                                     null
                             )
                     );
@@ -149,9 +155,13 @@ class MemorySystemPromptProviderTest {
                                     )
                             )
                     );
-            RuntimeContext context =
-                    new RuntimeContext(
+            AgentState context =
+                    new AgentState(
+                            true,
+                            ToolApprovalMode.BYPASS,
                             workspace,
+                            workspace,
+                            List.of(workspace),
                             null
                     );
 

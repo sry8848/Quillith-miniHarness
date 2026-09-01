@@ -9,7 +9,6 @@ import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
-import dev.learn.agent.manual.systemprompt.RuntimeContext;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 
 import java.io.IOException;
@@ -26,7 +25,7 @@ public final class ManualAgent {
     private final MemoryRuntime memoryRuntime;
     private final HookRegistry hookRegistry;
     private final SystemPromptManager systemPromptManager;
-    private final RuntimeContext runtimeContext;
+    private final AgentState agentState;
     private final List<MessageParam> history = new ArrayList<>();
 
     /**
@@ -37,7 +36,7 @@ public final class ManualAgent {
             MemoryRuntime memoryRuntime,
             HookRegistry hookRegistry,
             SystemPromptManager systemPromptManager,
-            RuntimeContext runtimeContext
+            AgentState agentState
     ) {
         this.agentLoop =
                 Objects.requireNonNull(
@@ -59,10 +58,10 @@ public final class ManualAgent {
                         systemPromptManager,
                         "SystemPromptManager 不能为空"
                 );
-        this.runtimeContext =
+        this.agentState =
                 Objects.requireNonNull(
-                        runtimeContext,
-                        "RuntimeContext 不能为空"
+                        agentState,
+                        "AgentState 不能为空"
                 );
     }
 
@@ -100,7 +99,7 @@ public final class ManualAgent {
         // 2. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
-                runtimeContext
+                agentState
         );
 
         String recalledMemories =
@@ -192,7 +191,7 @@ public final class ManualAgent {
      * 返回当前父会话是否启用记忆。
      */
     public boolean memoryEnabled() {
-        return memoryRuntime.enabled();
+        return agentState.memoryEnabled();
     }
 
     /**
@@ -201,12 +200,12 @@ public final class ManualAgent {
     public void setMemoryEnabled(
             boolean enabled
     ) {
-        memoryRuntime.setEnabled(
+        agentState.setMemoryEnabled(
                 enabled
         );
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
-                runtimeContext
+                agentState
         );
     }
 
