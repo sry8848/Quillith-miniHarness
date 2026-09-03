@@ -4,10 +4,12 @@ import com.anthropic.models.messages.ToolUnion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 保存 Agent 可以使用的所有工具。
@@ -29,6 +31,33 @@ public final class ToolRegistry {
      */
     private final Map<String, AgentTool> tools =
             new LinkedHashMap<>();
+
+    // 保存当前 Harness 统一使用的重试预算和退避参数。
+    private final ToolRetryPolicy retryPolicy;
+
+    /**
+     * 使用应用默认重试策略创建工具注册表。
+     */
+    public ToolRegistry() {
+        this(
+                ToolRetryPolicy.defaults()
+        );
+    }
+
+    /**
+     * 使用指定重试策略创建工具注册表。
+     *
+     * @param retryPolicy 当前 Harness 的 Tool 重试策略
+     */
+    public ToolRegistry(
+            ToolRetryPolicy retryPolicy
+    ) {
+        this.retryPolicy =
+                Objects.requireNonNull(
+                        retryPolicy,
+                        "ToolRetryPolicy 不能为空"
+                );
+    }
 
     /**
      * 注册一个工具。
@@ -186,43 +215,200 @@ public final class ToolRegistry {
             );
         }
 
-        /*
-         * 单个工具实现的运行时异常不能打断同批其他工具，
-         * 否则已经写入历史的 tool_use 将缺少配对结果。
-         * 完整异常只进入本地日志，模型接收可操作的错误摘要。
-         */
-        try {
-            return Objects.requireNonNull(
-                    tool.execute(
-                            toolCall.input()
-                    ),
-                    "AgentTool.execute 不能返回 null"
-            );
-        } catch (RuntimeException exception) {
-            // 保存完整堆栈，避免把内部实现细节全部塞进模型上下文。
-            LOGGER.error(
-                    "工具 {} 执行时发生未处理异常",
-                    toolCall.name(),
-                    exception
-            );
+        // 1. 同一 Tool Call 的所有可重试错误共享这一轮固定 attempts 预算。
+        for (int attempt = 1;
+             attempt <= retryPolicy.maxAttempts();
+             attempt++) {
+            try {
+                // 2. Tool 只负责业务执行和异常语义转换，Harness 不读取内部错误类型。
+                return Objects.requireNonNull(
+                        tool.execute(
+                                toolCall.input()
+                        ),
+                        "AgentTool.execute 不能返回 null"
+                );
+            } catch (RetryableToolException exception) {
+                if (attempt == retryPolicy.maxAttempts()) {
+                    return finalFailure(
+                            toolCall,
+                            exception,
+                            attempt,
+                            true
+                    );
+                }
 
-            // 先读取一次异常消息，避免重复调用并集中处理空消息。
-            String exceptionMessage =
-                    exception.getMessage();
+                Duration delay =
+                        retryDelayAfter(
+                                attempt
+                        );
 
-            // 没有消息时至少返回异常类型，保证模型得到非空错误原因。
-            String detail =
-                    exceptionMessage == null
-                            || exceptionMessage.isBlank()
-                            ? exception.getClass()
-                                    .getSimpleName()
-                            : exceptionMessage;
+                LOGGER.warn(
+                        "工具 {} 第 {}/{} 次执行失败，将在 {} ms 后重试：{}",
+                        toolCall.name(),
+                        attempt,
+                        retryPolicy.maxAttempts(),
+                        delay.toMillis(),
+                        exception.getMessage()
+                );
 
-            // 把异常降级为本次工具失败，使同批其他工具仍能继续执行。
-            return ToolExecutionResult.failure(
-                    "Error: tool execution failed unexpectedly: "
-                            + detail
+                // 3. 等待只发生在同一调度 action 内，不会越过现有顺序与并发边界。
+                if (!sleepBeforeRetry(
+                        delay
+                )) {
+                    return finalFailure(
+                            toolCall,
+                            new NonRetryableToolException(
+                                    "Retry wait was interrupted",
+                                    exception
+                            ),
+                            attempt,
+                            false
+                    );
+                }
+            } catch (NonRetryableToolException exception) {
+                return finalFailure(
+                        toolCall,
+                        exception,
+                        attempt,
+                        false
+                );
+            } catch (RuntimeException exception) {
+                // 未分类异常默认停止，避免程序 Bug 或副作用不确定时重复调用。
+                return finalFailure(
+                        toolCall,
+                        exception,
+                        attempt,
+                        false
+                );
+            }
+        }
+
+        throw new IllegalStateException(
+                "Tool 重试循环未返回结果"
+        );
+    }
+
+    /**
+     * 计算第几次可重试失败后的等待时间。
+     *
+     * @param failedAttempt 刚刚失败的 attempts，从 1 开始
+     * @return 已应用指数退避、抖动和最大值限制后的等待时间
+     */
+    Duration retryDelayAfter(
+            int failedAttempt
+    ) {
+        if (failedAttempt <= 0) {
+            throw new IllegalArgumentException(
+                    "failedAttempt 必须大于 0"
             );
         }
+
+        long baseDelayMillis =
+                retryPolicy.initialDelay()
+                        .toMillis();
+        long maxDelayMillis =
+                retryPolicy.maxDelay()
+                        .toMillis();
+
+        // 1. 每多一次连续失败，基础等待翻倍；先封顶避免整数溢出。
+        for (int index = 1;
+             index < failedAttempt
+                     && baseDelayMillis < maxDelayMillis;
+             index++) {
+            baseDelayMillis =
+                    Math.min(
+                            baseDelayMillis * 2,
+                            maxDelayMillis
+                    );
+        }
+
+        // 2. 在 Tool Call 之间加入随机扰动，避免同时失败的调用整齐重试。
+        double multiplier =
+                retryPolicy.jitterRatio() == 0.0d
+                        ? 1.0d
+                        : ThreadLocalRandom.current()
+                                .nextDouble(
+                                        1.0d - retryPolicy.jitterRatio(),
+                                        1.0d + retryPolicy.jitterRatio()
+                                );
+        long jitteredDelayMillis =
+                Math.round(
+                        baseDelayMillis * multiplier
+                );
+
+        // 3. 最终再次限制范围，保证 jitter 不会突破配置的最大等待时间。
+        return Duration.ofMillis(
+                Math.min(
+                        Math.max(
+                                jitteredDelayMillis,
+                                0L
+                        ),
+                        maxDelayMillis
+                )
+        );
+    }
+
+    /**
+     * 在下一次 Tool 尝试前等待指定时间。
+     *
+     * @param delay 本次重试前需要等待的时间
+     * @return 等待完成时返回 true；线程被中断时返回 false
+     */
+    private static boolean sleepBeforeRetry(
+            Duration delay
+    ) {
+        try {
+            Thread.sleep(
+                    delay
+            );
+            return true;
+        } catch (InterruptedException exception) {
+            // 中断代表当前执行应尽快结束，不能吞掉信号后继续执行下一次 Tool。
+            Thread.currentThread()
+                    .interrupt();
+            return false;
+        }
+    }
+
+    /**
+     * 记录最终失败并构造可回传给 Agent 的稳定错误结果。
+     *
+     * @param toolCall 当前完整 Tool Call
+     * @param exception 本次最终失败的异常
+     * @param attempts 实际已执行次数
+     * @param retryExhausted 是否因可重试预算耗尽停止
+     * @return 保留最终失败字段的 Tool Result
+     */
+    private static ToolExecutionResult finalFailure(
+            ToolCall toolCall,
+            RuntimeException exception,
+            int attempts,
+            boolean retryExhausted
+    ) {
+        LOGGER.error(
+                "工具 {} 在第 {} 次执行后失败",
+                toolCall.name(),
+                attempts,
+                exception
+        );
+
+        String message =
+                exception.getMessage();
+        String detail =
+                message == null || message.isBlank()
+                        ? exception.getClass()
+                                .getSimpleName()
+                        : message;
+
+        return ToolExecutionResult.failure(
+                "Tool call failed\n"
+                        + "tool: " + toolCall.name() + "\n"
+                        + "exception_type: "
+                        + exception.getClass()
+                        .getSimpleName() + "\n"
+                        + "message: " + detail + "\n"
+                        + "attempts: " + attempts + "\n"
+                        + "retry_exhausted: " + retryExhausted
+        );
     }
 }

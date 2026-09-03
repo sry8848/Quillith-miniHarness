@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.learn.agent.manual.tool.AgentTool;
+import dev.learn.agent.manual.tool.NonRetryableToolException;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -127,16 +128,18 @@ public final class McpAgentTool implements AgentTool {
                         result
                 );
 
-        // MCP 的 isError 表示远程工具执行失败，需要保留给 Agent 主循环。
-        return Boolean.TRUE.equals(
+        // MCP isError 只提供远端文本，不能从文本可靠判断临时性，因此保守地停止重试。
+        if (Boolean.TRUE.equals(
                 result.isError()
-        )
-                ? ToolExecutionResult.failure(
-                        content
-                )
-                : ToolExecutionResult.success(
-                        content
-                );
+        )) {
+            throw new NonRetryableToolException(
+                    content
+            );
+        }
+
+        return ToolExecutionResult.success(
+                content
+        );
     }
 
     /**

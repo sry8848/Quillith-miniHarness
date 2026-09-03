@@ -5,6 +5,7 @@ package dev.learn.agent.manual.tool.tools;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.tool.NonRetryableToolException;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
@@ -20,6 +21,7 @@ import java.util.List;
 // 引入当前测试使用的断言。
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -150,11 +152,14 @@ class ExternalFileToolTest {
                 );
 
         try {
-            ToolExecutionResult readResult =
-                    new ReadFileTool(
-                            paths
-                    ).execute(
-                            pathInput(existingFile)
+            NonRetryableToolException readException =
+                    assertThrows(
+                            NonRetryableToolException.class,
+                            () -> new ReadFileTool(
+                                    paths
+                            ).execute(
+                                    pathInput(existingFile)
+                            )
                     );
             ToolExecutionResult writeResult =
                     new WriteFileTool(
@@ -176,7 +181,12 @@ class ExternalFileToolTest {
                             )
                     );
 
-            assertTrue(readResult.error(), readResult.content());
+            assertTrue(
+                    readException.getMessage()
+                            .contains(
+                                    "Path escapes allowed roots"
+                            )
+            );
             assertTrue(writeResult.error(), writeResult.content());
             assertTrue(editResult.error(), editResult.content());
             assertEquals(

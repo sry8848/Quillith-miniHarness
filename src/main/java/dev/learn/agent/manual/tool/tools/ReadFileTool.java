@@ -3,6 +3,7 @@ package dev.learn.agent.manual.tool.tools;
 import com.anthropic.models.messages.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.tool.AgentTool;
+import dev.learn.agent.manual.tool.NonRetryableToolException;
 import dev.learn.agent.manual.tool.ToolDefinitionFactory;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
@@ -76,8 +77,8 @@ public final class ReadFileTool implements AgentTool {
 
         if (pathNode == null
                 || !pathNode.isTextual()) {
-            return ToolExecutionResult.failure(
-                    "Error: path must be a string"
+            throw new NonRetryableToolException(
+                    "path must be a string"
             );
         }
 
@@ -89,8 +90,8 @@ public final class ReadFileTool implements AgentTool {
             if (!limitNode.isIntegralNumber()
                     || !limitNode.canConvertToInt()
                     || limitNode.intValue() <= 0) {
-                return ToolExecutionResult.failure(
-                        "Error: limit must be a positive integer"
+                throw new NonRetryableToolException(
+                        "limit must be a positive integer"
                 );
             }
 
@@ -105,8 +106,8 @@ public final class ReadFileTool implements AgentTool {
                     );
 
             if (!Files.isRegularFile(file)) {
-                return ToolExecutionResult.failure(
-                        "Error: path is not a regular file"
+                throw new NonRetryableToolException(
+                        "path is not a regular file"
                 );
             }
 
@@ -117,8 +118,10 @@ public final class ReadFileTool implements AgentTool {
                     )
             );
         } catch (IOException exception) {
-            return ToolExecutionResult.failure(
-                    "Error: " + exception.getMessage()
+            // Java 文件 API 未稳定暴露跨平台的“临时占用”错误码，不能从文本猜测重试安全性。
+            throw new NonRetryableToolException(
+                    exception.getMessage(),
+                    exception
             );
         }
     }

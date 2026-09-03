@@ -52,8 +52,13 @@ public final class ManualAgentApplication {
                 Path.of("")
                         .toRealPath();
 
-        // 2. 当前固定用户目录配置值保持与旧实现一致，后续只替换这一配置来源。
-        Path agentHome = cwd;
+        // 2. 当前固定用户目录配置值保持与旧实现一致，后续只替换这个局部配置值。
+        Path configuredAgentHome = cwd;
+        Files.createDirectories(
+                configuredAgentHome
+        );
+        Path agentHome =
+                configuredAgentHome.toRealPath();
 
         // 3. 启动时以 workspace 发现 Git 根目录；未发现仓库仍允许为空。
         Path gitRoot = null;
@@ -120,17 +125,11 @@ public final class ManualAgentApplication {
             AgentState agentState,
             ApplicationOptions options
     ) throws IOException {
-        Path cwd = agentState.workspace();
         // 1. Interactive 继续保存完整终端 transcript，保持原有本地会话行为。
         Path transcriptDirectory =
-                cwd.resolve(
-                        ".task_outputs"
-                ).resolve(
-                        "transcripts"
+                createTerminalTranscriptDirectory(
+                        agentState
                 );
-        Files.createDirectories(
-                transcriptDirectory
-        );
         String transcriptTimestamp =
                 DateTimeFormatter.ofPattern(
                                 "yyyyMMdd-HHmmss-SSS"
@@ -198,6 +197,29 @@ public final class ManualAgentApplication {
     }
 
     /**
+     * 创建当前 Session 的终端 transcript 目录。
+     *
+     * @param agentState 当前 CLI Session 状态
+     * @return agentHome 下已经创建的终端 transcript 目录
+     * @throws IOException 目录创建失败
+     */
+    static Path createTerminalTranscriptDirectory(
+            AgentState agentState
+    ) throws IOException {
+        // 1. 终端运行记录属于 Agent 自身，不随当前 workspace 改变位置。
+        Path transcriptDirectory =
+                agentState.agentHome()
+                        .resolve(".task_outputs")
+                        .resolve("transcripts");
+
+        // 2. 创建失败直接交给应用入口终止启动，不回退到 workspace。
+        Files.createDirectories(
+                transcriptDirectory
+        );
+        return transcriptDirectory;
+    }
+
+    /**
      * 在 Harbor 隔离环境中使用现有 BYPASS 模式执行一条任务。
      *
      * @param agentState 当前 CLI Session 状态
@@ -209,7 +231,7 @@ public final class ManualAgentApplication {
             AgentState agentState,
             ApplicationOptions options
     ) throws IOException {
-        // 1. Exec 不创建 Scanner 和 workspace transcript，输出直接交给 Harbor 捕获。
+        // 1. Exec 不创建 Scanner 和终端 transcript，输出直接交给 Harbor 捕获。
         try (AgentRuntime runtime =
                      AgentRuntime.create(
                              agentState,

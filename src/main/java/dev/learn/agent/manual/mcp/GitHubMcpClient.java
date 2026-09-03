@@ -1,12 +1,17 @@
 package dev.learn.agent.manual.mcp;
 
+import dev.learn.agent.manual.tool.NonRetryableToolException;
+import dev.learn.agent.manual.tool.RetryableToolException;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.http.HttpRequest;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -151,9 +156,56 @@ public final class GitHubMcpClient implements McpToolClient {
                         )
                         .build();
 
-        return client.callTool(
-                request
-        );
+        try {
+            return client.callTool(
+                    request
+            );
+        } catch (RuntimeException exception) {
+            // GitHub MCP 只暴露只读工具；仅已识别的瞬时传输原因才允许重新发送请求。
+            if (isRetryableTransportFailure(
+                    exception
+            )) {
+                throw new RetryableToolException(
+                        "GitHub MCP transport temporarily failed",
+                        exception
+                );
+            }
+
+            // SDK 对普通 MCP transport failure 不稳定暴露 HTTP 状态，不能靠错误文本猜测 429 或 5xx。
+            throw new NonRetryableToolException(
+                    "GitHub MCP call failed",
+                    exception
+            );
+        }
+    }
+
+    /**
+     * 判断异常因果链中是否包含已确认的瞬时网络失败。
+     *
+     * @param exception MCP 调用抛出的原始异常
+     * @return 包含超时或连接失败根因时返回 true
+     */
+    static boolean isRetryableTransportFailure(
+            RuntimeException exception
+    ) {
+        Throwable current = exception;
+
+        while (current != null) {
+            if (current instanceof HttpTimeoutException
+                    || current instanceof SocketTimeoutException
+                    || current instanceof ConnectException) {
+                return true;
+            }
+
+            Throwable cause =
+                    current.getCause();
+            if (cause == current) {
+                break;
+            }
+            current = cause;
+        }
+
+        return false;
     }
 
     /**

@@ -27,7 +27,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 使用 Git Bash 执行 Shell 命令。
+ * 使用当前运行环境配置的 Bash executable 执行 Shell 命令。
  *
  * <p>Workspace 只是进程的初始工作目录，不是文件系统沙盒；
  * 工具审批由 AgentLoop 外部的审批边界统一处理。</p>
@@ -89,7 +89,7 @@ public final class BashTool implements AgentTool, AutoCloseable {
      * 创建 Bash 工具。
      *
      * @param workspace           命令默认执行目录
-     * @param bashExecutable      Git Bash 的 bash.exe 路径
+     * @param bashExecutable      当前运行环境的 Bash executable 路径
      * @param backgroundScheduler 当前 AgentLoop 的后台任务调度器
      */
     public BashTool(
@@ -132,7 +132,7 @@ public final class BashTool implements AgentTool, AutoCloseable {
 
         if (!Files.isRegularFile(this.bashExecutable)) {
             throw new IllegalArgumentException(
-                    "Git Bash 不存在："
+                    "Bash executable 不存在："
                             + this.bashExecutable
             );
         }

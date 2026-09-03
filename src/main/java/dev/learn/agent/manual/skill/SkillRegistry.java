@@ -124,6 +124,15 @@ public final class SkillRegistry
     }
 
     /**
+     * 判断当前目录是否没有可注册的 Skill。
+     *
+     * @return 没有 Skill 时返回 true
+     */
+    public boolean isEmpty() {
+        return skills.isEmpty();
+    }
+
+    /**
      * Skill 说明排列在基础环境说明之后。
      */
     @Override
