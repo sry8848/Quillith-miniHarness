@@ -5,6 +5,7 @@ package dev.learn.agent.manual;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.core.JsonValue;
 import com.anthropic.core.ObjectMappers;
+import com.anthropic.core.http.HttpResponseFor;
 import com.anthropic.core.http.StreamResponse;
 import com.anthropic.errors.AnthropicIoException;
 import com.anthropic.errors.AnthropicInvalidDataException;
@@ -34,12 +35,15 @@ import dev.learn.agent.manual.recovery.ModelRequestRecoveryState;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
+import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
 import dev.learn.agent.manual.tool.ToolCall;
 import dev.learn.agent.manual.tool.ToolCallDispatcher;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.approval.ToolApprovalGate;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.instrumentation.annotations.WithSpan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -424,7 +428,7 @@ public final class AgentLoop {
                 // 发送一次主模型请求并取得稳定的流结果。
                 try {
                     turn =
-                            createStreamingTurn(
+                            runIteration(
                                     createRequest(
                                             messages,
                                             turnContext
@@ -649,9 +653,7 @@ public final class AgentLoop {
 
             // 按模型调用顺序等待并收集本轮工具结果。
             List<ContentBlockParam> limitedToolResults =
-                    collectToolResults(
-                            turn.toolExecutions()
-                    );
+                    turn.toolResults();
 
             // 在含工具调用的响应达到输出上限时追加专用续写说明。
             // 设计意图：已执行的完整工具调用不能撤销，恢复说明必须放在全部 tool_result 之后。
@@ -730,9 +732,34 @@ public final class AgentLoop {
      * @param request 已构造完成的模型请求
      * @return 本次模型流可安全进入历史的内容和工具执行
      */
-    @WithSpan("llm.call")
-    private StreamTurn createStreamingTurn(
+    @WithSpan("agent.iteration")
+    private StreamTurn runIteration(
             MessageCreateParams request
+    ) {
+        StreamTurn turn;
+        Context iterationContext = Context.current();
+
+        try (ToolCallDispatcher toolDispatcher =
+                     new ToolCallDispatcher(
+                             toolRegistry,
+                             backgroundScheduler
+                     )) {
+            turn = streamModel(request, toolDispatcher, iterationContext);
+        }
+
+        // 前台调度器关闭后，所有本轮工具已经结束，可以在 iteration 内按原顺序生成结果。
+        return turn.withToolResults(
+                collectToolResults(
+                        turn.toolExecutions()
+                )
+        );
+    }
+
+    @WithSpan("llm.call")
+    private StreamTurn streamModel(
+            MessageCreateParams request,
+            ToolCallDispatcher toolDispatcher,
+            Context iterationContext
     ) {
         // 使用当前模型名称区分同一 Agent 回合中的不同模型请求。
         Span.current().updateName(
@@ -772,24 +799,23 @@ public final class AgentLoop {
         boolean reachedOutputLimit =
                 false;
 
-        // 创建当前模型流的前台顺序调度和后台任务分流边界。
-        // 设计意图：后台调用不进入前台依赖链，但仍复用同一个工具执行管线。
-        try (ToolCallDispatcher toolDispatcher =
-                     new ToolCallDispatcher(
-                             toolRegistry,
-                             backgroundScheduler
-                     )) {
-            // 创建并消费模型响应流，把可恢复的流异常转换成稳定结果。
-            try {
+        // 创建并消费模型响应流，把可恢复的流异常转换成稳定结果。
+        try {
                 // 发送已构造的请求并取得模型事件流。
-                StreamResponse<RawMessageStreamEvent> streamResponse =
+                HttpResponseFor<StreamResponse<RawMessageStreamEvent>> response =
                         client.messages()
+                                .withRawResponse()
                                 .createStreaming(
                                         request
                                 );
 
-                // 在自动关闭响应流的边界内遍历全部事件。
-                try (streamResponse) {
+                // HTTP 响应和 SSE 流必须在 LLM 方法内关闭，避免 llm.call 覆盖 Tool 等待。
+                try (response; StreamResponse<RawMessageStreamEvent> streamResponse =
+                        response.parse()) {
+                    response.requestId().ifPresent(
+                            GenAiSpanAttributes::recordResponseId
+                    );
+
                     // 创建按服务端顺序读取事件的迭代器。
                     Iterator<RawMessageStreamEvent> events =
                             streamResponse.stream()
@@ -801,7 +827,16 @@ public final class AgentLoop {
                         RawMessageStreamEvent event =
                                 events.next();
 
-                        // 在 content_block_start 到达时初始化当前内容块。
+                        // 1. 读取 Provider 在 message_start 返回的模型和输入用量。
+                        if (event.isMessageStart()) {
+                            GenAiSpanAttributes.recordMessageStart(
+                                    model,
+                                    event.asMessageStart().message()
+                            );
+                            continue;
+                        }
+
+                        // 2. 在 content_block_start 到达时初始化当前内容块。
                         if (event.isContentBlockStart()) {
                             // 保存新开始的内容块类型和初始数据。
                             currentBlock =
@@ -1015,7 +1050,8 @@ public final class AgentLoop {
                                                     ToolCall.from(
                                                             completedTool
                                                     ),
-                                                    () -> executeTool(
+                                                    () -> executeInIteration(
+                                                            iterationContext,
                                                             completedTool
                                                     )
                                             );
@@ -1062,6 +1098,15 @@ public final class AgentLoop {
 
                         // 在 message_delta 到达时记录模型停止原因。
                         if (event.isMessageDelta()) {
+                            GenAiSpanAttributes.recordMessageDelta(
+                                    event.asMessageDelta().usage(),
+                                    event.asMessageDelta()
+                                            .delta()
+                                            .stopReason()
+                                            .map(StopReason::asString)
+                                            .orElse(null)
+                            );
+
                             // 在停止原因为 MAX_TOKENS 时标记响应达到输出上限。
                             if (event.asMessageDelta()
                                     .delta()
@@ -1114,9 +1159,11 @@ public final class AgentLoop {
                         ),
                         reachedOutputLimit,
                         false,
-                        null
+                        null,
+                        List.of()
                 );
             } catch (SseException exception) {
+                GenAiSpanAttributes.markLlmFailure();
                 // 保留 SSE Provider Error 及此前已经完成的工具调用，交给业务回合恢复判断。
                 return new StreamTurn(
                         List.copyOf(
@@ -1131,10 +1178,12 @@ public final class AgentLoop {
                         ),
                         false,
                         false,
-                        exception
+                        exception,
+                        List.of()
                 );
             } catch (AnthropicIoException
                      | AnthropicInvalidDataException exception) {
+                GenAiSpanAttributes.markLlmFailure();
                 // 把可恢复的模型流异常转换为仅含完整内容块的中断结果。
                 return interruptedTurn(
                         assistantContent,
@@ -1143,7 +1192,6 @@ public final class AgentLoop {
                         exception
                 );
             }
-        }
     }
 
     /**
@@ -1191,7 +1239,8 @@ public final class AgentLoop {
                 ),
                 false,
                 true,
-                null
+                null,
+                List.of()
         );
     }
 
@@ -1316,9 +1365,7 @@ public final class AgentLoop {
         // 等待并预算已经启动的工具结果，保持原 tool_use_id 的协议配对。
         List<ContentBlockParam> userContent =
                 new ArrayList<>(
-                        collectToolResults(
-                                providerErrorTurn.toolExecutions()
-                        )
+                        providerErrorTurn.toolResults()
                 );
 
         // Anthropic 要求 tool_result 在同一 user 消息的普通文本之前。
@@ -1604,6 +1651,7 @@ public final class AgentLoop {
         Span.current().updateName(
                 "tool.execute " + toolUse.name()
         );
+        GenAiSpanAttributes.recordToolCall(toolUse);
 
         // 在工具执行管线边界内捕获未处理的运行时异常。
         try {
@@ -1735,6 +1783,23 @@ public final class AgentLoop {
     }
 
     /**
+     * 在 Tool 虚拟线程中恢复所属 iteration 的 Context 后执行工具。
+     *
+     * @param iterationContext Tool 提交时捕获的 iteration Context
+     * @param toolUse 已完整关闭的工具调用
+     * @return 当前工具的最终执行结果
+     */
+    private ToolExecutionResult executeInIteration(
+            Context iterationContext,
+            ToolUseBlock toolUse
+    ) {
+        // 1. 在真实执行线程恢复 iteration Context，使工具不继承已结束的 LLM Span。
+        try (Scope ignored = iterationContext.makeCurrent()) {
+            return executeTool(toolUse);
+        }
+    }
+
+    /**
      * 按模型调用顺序等待工具结果并应用现有结果预算。
      *
      * @param executions 已按安全级别调度的工具调用
@@ -1810,9 +1875,7 @@ public final class AgentLoop {
         if (!turn.toolExecutions()
                 .isEmpty()) {
             userContent.addAll(
-                    collectToolResults(
-                            turn.toolExecutions()
-                    )
+                    turn.toolResults()
             );
         }
 
@@ -1902,6 +1965,7 @@ public final class AgentLoop {
      * @param reachedOutputLimit 正常流是否达到输出上限
      * @param interrupted 本次流是否在 message_stop 前中断
      * @param providerError SSE 流收到的 Provider Error；正常结果为 null
+     * @param toolResults iteration 内按调用顺序准备好的 tool_result
      */
     private record StreamTurn(
             List<ContentBlockParam> assistantContent,
@@ -1909,8 +1973,22 @@ public final class AgentLoop {
             List<PendingToolExecution> toolExecutions,
             boolean reachedOutputLimit,
             boolean interrupted,
-            AnthropicServiceException providerError
+            AnthropicServiceException providerError,
+            List<ContentBlockParam> toolResults
     ) {
+        private StreamTurn withToolResults(
+                List<ContentBlockParam> toolResults
+        ) {
+            return new StreamTurn(
+                    assistantContent,
+                    text,
+                    toolExecutions,
+                    reachedOutputLimit,
+                    interrupted,
+                    providerError,
+                    List.copyOf(toolResults)
+            );
+        }
     }
 
     /**
