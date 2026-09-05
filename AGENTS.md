@@ -1,7 +1,7 @@
-**当前唯一进行中的项目是 manual agent，位于 `"D:\learn_claudecode\learn-claude-code\demo\manual-agent"**
+需要时有用但一般不需要的文件位置
 
 - `D:\learn_claudecode\harbor-lab`：测评框架。
-- `D:\learn_claudecode\learn-claude-code` 和 `D:\learn_claudecode\learn-claude-code-new`：学习教程及其新版。
+- `D:\learn_claudecode\learn-claude-code-new`：学习教程。
 - `D:\learn_claudecode\claude-code-cli`：开源泄露的 Claude Code 源码。
 
 ## 你在设计或审查异常与日志处理时，遵循以下规则：**
@@ -59,9 +59,7 @@
 
 **能处理就处理；不能处理就抛；能合理降级才兜底；未知异常在执行边界记录日志并统一失败响应；避免重复日志和吞异常。最终异常处理原则需要明确经过用户同意才能执行
 
-
-
-## D:\learn_claudecode\docs文件夹与长期记忆规则
+## "D:\learn_claudecode\demo\Quillith-miniHarness\docs"文件夹与长期记忆规则
 
 目录大致如下：
 
