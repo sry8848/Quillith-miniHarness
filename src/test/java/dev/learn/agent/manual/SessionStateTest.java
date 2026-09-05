@@ -9,13 +9,15 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 验证 CLI Session 状态的所有权、可变性和多根目录集合语义。
  */
-class AgentStateTest {
+class SessionStateTest {
 
     /**
      * 验证状态保存所有字段，并且 allowedRoots 不受调用方集合修改影响。
@@ -31,8 +33,8 @@ class AgentStateTest {
                         List.of(firstRoot)
                 );
 
-        AgentState state =
-                new AgentState(
+        SessionState state =
+                new SessionState(
                         true,
                         ToolApprovalMode.ASK,
                         agentHome,
@@ -56,14 +58,64 @@ class AgentStateTest {
     }
 
     /**
+     * 验证 Session ID 创建后非空且多次读取保持不变。
+     */
+    @Test
+    void keepsStableSessionId() {
+        SessionState state =
+                new SessionState(
+                        true,
+                        ToolApprovalMode.ASK,
+                        Path.of("agent-home"),
+                        Path.of("workspace"),
+                        List.of(Path.of("workspace")),
+                        null
+                );
+
+        String sessionId =
+                state.sessionId();
+
+        assertNotNull(sessionId);
+        assertFalse(sessionId.isBlank());
+        assertEquals(sessionId, state.sessionId());
+    }
+
+    /**
+     * 验证不同 SessionState 拥有不同 Session ID。
+     */
+    @Test
+    void createsDifferentSessionIdsForDifferentStates() {
+        SessionState first =
+                new SessionState(
+                        true,
+                        ToolApprovalMode.ASK,
+                        Path.of("agent-home"),
+                        Path.of("workspace"),
+                        List.of(Path.of("workspace")),
+                        null
+                );
+        SessionState second =
+                new SessionState(
+                        true,
+                        ToolApprovalMode.ASK,
+                        Path.of("agent-home"),
+                        Path.of("workspace"),
+                        List.of(Path.of("workspace")),
+                        null
+                );
+
+        assertNotEquals(first.sessionId(), second.sessionId());
+    }
+
+    /**
      * 验证可变字段可以独立修改，不限制 allowedRoots 的元素数量。
      */
     @Test
     void updatesOnlyRuntimeFlagsAndAcceptsMultipleRoots() {
         Path firstRoot = Path.of("first-root");
         Path secondRoot = Path.of("second-root");
-        AgentState state =
-                new AgentState(
+        SessionState state =
+                new SessionState(
                         true,
                         ToolApprovalMode.ASK,
                         Path.of("agent-home"),

@@ -1,6 +1,6 @@
 package dev.learn.agent.manual.systemprompt;
 
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -48,12 +48,12 @@ public final class SystemPromptManager {
      * 刷新指定生命周期及所有更短生命周期的 Item。
      *
      * @param refreshScope 本次发生变化的生命周期
-     * @param agentState Provider 读取的当前 Session 真实状态
+     * @param sessionState Provider 读取的当前 Session 真实状态
      * @return 刷新后重新组装的完整 System Prompt
      */
     public SystemPrompt refreshFrom(
             RefreshScope refreshScope,
-            AgentState agentState
+            SessionState sessionState
     ) {
         // 记录本次实际新增、修改或删除的 Item。
         List<String> changedItemIds = new ArrayList<>();
@@ -63,7 +63,7 @@ public final class SystemPromptManager {
             if (provider.scope().ordinal() < refreshScope.ordinal()) {
                 continue;
             }
-            refreshItem(provider, agentState, changedItemIds);
+            refreshItem(provider, sessionState, changedItemIds);
         }
 
         // [核心] 按稳定顺序添加标签并重新组装完整 system 字符串。
@@ -94,12 +94,12 @@ public final class SystemPromptManager {
      */
     private void refreshItem(
             SystemPromptProvider provider,
-            AgentState agentState,
+            SessionState sessionState,
             List<String> changedItemIds
     ) {
         // 读取旧 Item 和能力模块当前提供的最新内容。
         SystemPromptItem oldItem = items.get(provider.id());
-        Optional<String> loaded = provider.load(agentState);
+        Optional<String> loaded = provider.load(sessionState);
 
         // [核心] Provider 返回空值时删除之前存在的完整 section。
         if (loaded.isEmpty()) {

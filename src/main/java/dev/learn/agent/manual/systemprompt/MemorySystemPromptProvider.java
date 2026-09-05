@@ -1,6 +1,6 @@
 package dev.learn.agent.manual.systemprompt;
 
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 
 import java.util.Objects;
@@ -15,7 +15,7 @@ import java.util.Optional;
 public final class MemorySystemPromptProvider
         implements SystemPromptProvider {
 
-    // MemoryRuntime 读取共享 AgentState，并负责索引读取。
+    // MemoryRuntime 读取共享 SessionState，并负责索引读取。
     private final MemoryRuntime memoryRuntime;
 
     /**
@@ -65,7 +65,7 @@ public final class MemorySystemPromptProvider
      */
     @Override
     public Optional<String> load(
-            AgentState agentState
+            SessionState sessionState
     ) {
         return memoryRuntime.loadIndex()
                 .map(

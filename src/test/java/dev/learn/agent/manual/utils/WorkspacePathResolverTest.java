@@ -1,6 +1,6 @@
 package dev.learn.agent.manual.utils;
 
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -391,7 +391,7 @@ class WorkspacePathResolverTest {
             Path... allowedRoots
     ) throws IOException {
         return new WorkspacePathResolver(
-                new AgentState(
+                new SessionState(
                         false,
                         ToolApprovalMode.BYPASS,
                         workspace,

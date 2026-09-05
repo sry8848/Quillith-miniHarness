@@ -5,7 +5,7 @@ package dev.learn.agent.manual.tool.approval;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.tool.ToolCall;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import org.junit.jupiter.api.Test;
@@ -250,7 +250,7 @@ class DefaultToolApprovalPolicyTest {
         );
         return new DefaultToolApprovalPolicy(
                 new WorkspacePathResolver(
-                        new AgentState(
+                        new SessionState(
                                 false,
                                 ToolApprovalMode.BYPASS,
                                 workspace,

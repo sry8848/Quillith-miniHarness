@@ -12,7 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.learn.agent.manual.AgentLoop;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -401,8 +401,8 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             toolExecutions
                     )
             );
-            AgentState agentState =
-                    new AgentState(
+            SessionState sessionState =
+                    new SessionState(
                             false,
                             ToolApprovalMode.BYPASS,
                             workspace,
@@ -412,7 +412,7 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                     );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            agentState
+                            sessionState
                     );
             ContextManager contextManager =
                     new ContextManager(
@@ -425,7 +425,7 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             new DefaultToolApprovalPolicy(
                                     paths
                             ),
-                            agentState,
+                            sessionState,
                             null
                     );
             this.agentLoop =
@@ -435,7 +435,7 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             new SystemPromptManager(
                                     List.of()
                             ),
-                            agentState,
+                            sessionState,
                             toolRegistry,
                             approvalGate,
                             new HookRegistry(),

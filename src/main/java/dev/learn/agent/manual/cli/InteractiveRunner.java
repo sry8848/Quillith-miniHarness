@@ -1,14 +1,14 @@
 package dev.learn.agent.manual.cli;
 
 import com.anthropic.errors.AnthropicServiceException;
-import dev.learn.agent.manual.ManualAgent;
+import dev.learn.agent.manual.AgentSession;
 
 import java.io.IOException;
 import java.util.Objects;
 import java.util.Scanner;
 
 /**
- * 从终端持续读取用户输入，并把普通消息提交给同一个 ManualAgent。
+ * 从终端持续读取用户输入，并把普通消息提交给同一个 AgentSession。
  */
 public final class InteractiveRunner {
 
@@ -31,11 +31,11 @@ public final class InteractiveRunner {
      * 保持当前命令行行为运行交互循环。
      */
     public void run(
-            ManualAgent manualAgent
+            AgentSession agentSession
     ) throws IOException {
         Objects.requireNonNull(
-                manualAgent,
-                "ManualAgent 不能为空"
+                agentSession,
+                "AgentSession 不能为空"
         );
 
         // 1. Interactive 独有的 banner 和输入说明保持原样。
@@ -71,14 +71,14 @@ public final class InteractiveRunner {
             if (isMemoryCommand(command)) {
                 handleMemoryCommand(
                         command,
-                        manualAgent
+                        agentSession
                 );
                 continue;
             }
 
             try {
                 // 4. 普通输入沿用同一个父 Agent，保留跨 Turn history。
-                manualAgent.submit(
+                agentSession.submit(
                         query
                 );
             } catch (AnthropicServiceException ignored) {
@@ -109,7 +109,7 @@ public final class InteractiveRunner {
      */
     private static void handleMemoryCommand(
             String command,
-            ManualAgent manualAgent
+            AgentSession agentSession
     ) {
         String argument =
                 command.length()
@@ -120,7 +120,7 @@ public final class InteractiveRunner {
                 ).trim();
 
         if ("on".equalsIgnoreCase(argument)) {
-            manualAgent.setMemoryEnabled(
+            agentSession.setMemoryEnabled(
                     true
             );
             System.out.println(
@@ -130,7 +130,7 @@ public final class InteractiveRunner {
         }
 
         if ("off".equalsIgnoreCase(argument)) {
-            manualAgent.setMemoryEnabled(
+            agentSession.setMemoryEnabled(
                     false
             );
             System.out.println(
@@ -143,7 +143,7 @@ public final class InteractiveRunner {
                 || argument.isEmpty()) {
             System.out.println(
                     "[Memory："
-                            + (manualAgent.memoryEnabled()
+                            + (agentSession.memoryEnabled()
                             ? "已开启"
                             : "已关闭")
                             + "]"

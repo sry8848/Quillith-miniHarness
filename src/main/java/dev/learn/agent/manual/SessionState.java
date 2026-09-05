@@ -5,6 +5,7 @@ import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * 保存一个 CLI Session 的唯一语义状态、策略状态和路径上下文。
@@ -12,7 +13,10 @@ import java.util.Objects;
  * <p>只有记忆开关和审批模式允许在运行期间改变；路径上下文在 Session
  * 创建时确定。父 Agent、SubAgent 以及它们的组件都应读取同一个实例。</p>
  */
-public final class AgentState {
+public final class SessionState {
+
+    /* Session ID 是会话身份的唯一事实来源，创建后不再变化。 */
+    private final String sessionId;
 
     /* 后台任务可能与交互线程并行读取，状态修改需要立即可见。 */
     private volatile boolean memoryEnabled;
@@ -34,7 +38,7 @@ public final class AgentState {
      * @param allowedRoots Agent 可访问和修改的真实目录集合
      * @param gitRoot 当前 Git 仓库根目录；未发现时为 {@code null}
      */
-    public AgentState(
+    public SessionState(
             boolean memoryEnabled,
             ToolApprovalMode approvalMode,
             Path agentHome,
@@ -42,6 +46,12 @@ public final class AgentState {
             List<Path> allowedRoots,
             Path gitRoot
     ) {
+        // 1. 创建本次 Session 的稳定 ID。
+        this.sessionId =
+                UUID.randomUUID()
+                        .toString();
+
+        // 2. 保存运行期可变状态和创建时确定的路径上下文。
         this.memoryEnabled = memoryEnabled;
         this.approvalMode = Objects.requireNonNull(
                 approvalMode,
@@ -62,6 +72,13 @@ public final class AgentState {
                 )
         );
         this.gitRoot = gitRoot;
+    }
+
+    /**
+     * 返回当前 Session 创建时生成的稳定 ID。
+     */
+    public String sessionId() {
+        return sessionId;
     }
 
     /**

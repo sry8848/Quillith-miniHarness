@@ -74,7 +74,7 @@ public final class AgentRuntime implements AutoCloseable {
     private static final String MAIN_AGENT_OWNER =
             "main-agent";
 
-    private final ManualAgent manualAgent;
+    private final AgentSession agentSession;
     private final BackgroundTaskScheduler parentBackgroundScheduler;
     private final BackgroundTaskScheduler subagentBackgroundScheduler;
     private final BashTool parentBashTool;
@@ -84,7 +84,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final AnthropicClient client;
 
     private AgentRuntime(
-            ManualAgent manualAgent,
+            AgentSession agentSession,
             BackgroundTaskScheduler parentBackgroundScheduler,
             BackgroundTaskScheduler subagentBackgroundScheduler,
             BashTool parentBashTool,
@@ -93,7 +93,7 @@ public final class AgentRuntime implements AutoCloseable {
             GitHubMcpClient githubMcpClient,
             AnthropicClient client
     ) {
-        this.manualAgent = manualAgent;
+        this.agentSession = agentSession;
         this.parentBackgroundScheduler = parentBackgroundScheduler;
         this.subagentBackgroundScheduler = subagentBackgroundScheduler;
         this.parentBashTool = parentBashTool;
@@ -106,21 +106,21 @@ public final class AgentRuntime implements AutoCloseable {
     /**
      * 按当前应用装配顺序创建完整 Runtime。
      *
-     * @param agentState 当前 CLI Session 的唯一状态
+     * @param sessionState 当前 CLI Session 的唯一状态
      * @param scanner ASK 模式共享的终端输入，BYPASS 模式传 null
      * @return 已完成依赖装配的 Runtime
      * @throws IOException 工作区或 Runtime 资源初始化失败
      */
     public static AgentRuntime create(
-            AgentState agentState,
+            SessionState sessionState,
             Scanner scanner
     ) throws IOException {
         Objects.requireNonNull(
-                agentState,
-                "AgentState 不能为空"
+                sessionState,
+                "SessionState 不能为空"
         );
-        Path workspace = agentState.workspace();
-        Path gitRoot = agentState.gitRoot();
+        Path workspace = sessionState.workspace();
+        Path gitRoot = sessionState.gitRoot();
 
         // 1. Harbor 显式模型配置优先，未提供时保持当前 Quillith 默认模型。
         String configuredModel =
@@ -196,11 +196,11 @@ public final class AgentRuntime implements AutoCloseable {
 
         WorkspacePathResolver paths =
                 new WorkspacePathResolver(
-                        agentState
+                        sessionState
                 );
         SkillRegistry skillRegistry =
                 loadSkillRegistry(
-                        agentState.agentHome()
+                        sessionState.agentHome()
                                 .resolve(
                                         "skills"
                                 )
@@ -336,7 +336,7 @@ public final class AgentRuntime implements AutoCloseable {
         ToolApprovalGate approvalGate =
                 new ToolApprovalGate(
                         approvalPolicy,
-                        agentState,
+                        sessionState,
                         scanner
                 );
         LargeOutputHook largeOutputHook =
@@ -377,7 +377,7 @@ public final class AgentRuntime implements AutoCloseable {
                         .build();
         MemoryRuntime memoryRuntime =
                 new MemoryRuntime(
-                        agentState,
+                        sessionState,
                         client,
                         model,
                         paths
@@ -413,7 +413,7 @@ public final class AgentRuntime implements AutoCloseable {
                 );
         subagentSystemPromptManager.refreshFrom(
                 RefreshScope.APPLICATION,
-                agentState
+                sessionState
         );
 
         AgentLoop subagentLoop =
@@ -421,7 +421,7 @@ public final class AgentRuntime implements AutoCloseable {
                         client,
                         model,
                         subagentSystemPromptManager,
-                        agentState,
+                        sessionState,
                         subagentToolRegistry,
                         approvalGate,
                         subagentHookRegistry,
@@ -459,7 +459,7 @@ public final class AgentRuntime implements AutoCloseable {
                 );
         parentSystemPromptManager.refreshFrom(
                 RefreshScope.APPLICATION,
-                agentState
+                sessionState
         );
 
         AgentLoop agentLoop =
@@ -467,7 +467,7 @@ public final class AgentRuntime implements AutoCloseable {
                         client,
                         model,
                         parentSystemPromptManager,
-                        agentState,
+                        sessionState,
                         toolRegistry,
                         approvalGate,
                         hookRegistry,
@@ -477,17 +477,17 @@ public final class AgentRuntime implements AutoCloseable {
                         MAX_PARENT_MODEL_ROUNDS,
                         recoveryManager
                 );
-        ManualAgent manualAgent =
-                new ManualAgent(
+        AgentSession agentSession =
+                new AgentSession(
                         agentLoop,
                         memoryRuntime,
                         hookRegistry,
                         parentSystemPromptManager,
-                        agentState
+                        sessionState
                 );
 
         return new AgentRuntime(
-                manualAgent,
+                agentSession,
                 parentBackgroundScheduler,
                 subagentBackgroundScheduler,
                 parentBashTool,
@@ -499,10 +499,10 @@ public final class AgentRuntime implements AutoCloseable {
     }
 
     /**
-     * 返回本 Runtime 唯一的父 ManualAgent。
+     * 返回本 Runtime 唯一的父 AgentSession。
      */
-    public ManualAgent manualAgent() {
-        return manualAgent;
+    public AgentSession agentSession() {
+        return agentSession;
     }
 
     /**

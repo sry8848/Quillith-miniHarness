@@ -3,7 +3,7 @@ package dev.learn.agent.manual.task;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.json.JsonMapper;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.tool.tools.ClaimTaskTool;
@@ -183,7 +183,7 @@ class TaskSystemTest {
     private TaskStore newStore() throws IOException {
         return new TaskStore(
                 new WorkspacePathResolver(
-                        new AgentState(
+                        new SessionState(
                                 false,
                                 ToolApprovalMode.BYPASS,
                                 workspace,

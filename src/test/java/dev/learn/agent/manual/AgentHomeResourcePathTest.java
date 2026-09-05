@@ -48,7 +48,7 @@ class AgentHomeResourcePathTest {
                 "workspace-skill",
                 "Workspace instructions."
         );
-        AgentState agentState =
+        SessionState sessionState =
                 state(
                         agentHome,
                         workspace
@@ -56,7 +56,7 @@ class AgentHomeResourcePathTest {
 
         SkillRegistry registry =
                 new SkillRegistry(
-                        agentState.agentHome()
+                        sessionState.agentHome()
                                 .resolve("skills")
                 );
         LoadSkillTool loadSkillTool =
@@ -118,7 +118,7 @@ class AgentHomeResourcePathTest {
                 Files.createDirectories(
                         temporaryRoot.resolve("agent-home")
                 );
-        AgentState agentState =
+        SessionState sessionState =
                 state(
                         agentHome,
                         workspace
@@ -127,7 +127,7 @@ class AgentHomeResourcePathTest {
         Path transcriptDirectory =
                 ManualAgentApplication
                         .createTerminalTranscriptDirectory(
-                                agentState
+                                sessionState
                         );
 
         assertEquals(
@@ -148,16 +148,16 @@ class AgentHomeResourcePathTest {
         );
         assertEquals(
                 List.of(workspace),
-                agentState.allowedRoots()
+                sessionState.allowedRoots()
         );
     }
 
     /** 创建保持 workspace-only allowedRoots 的测试 Session。 */
-    private static AgentState state(
+    private static SessionState state(
             Path agentHome,
             Path workspace
     ) {
-        return new AgentState(
+        return new SessionState(
                 true,
                 ToolApprovalMode.ASK,
                 agentHome,

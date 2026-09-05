@@ -43,18 +43,36 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 验证 ManualAgent 保持父用户 Turn 的现有编排行为。
+ * 验证 AgentSession 保持父用户 Turn 的现有编排行为。
  */
-class ManualAgentTest {
+class AgentSessionTest {
 
     @TempDir
     Path workspace;
 
     @Test
+    void returnsSessionStateId()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of()
+                     )) {
+            assertEquals(
+                    fixture.sessionState()
+                            .sessionId(),
+                    fixture.agentSession()
+                            .sessionId()
+            );
+        }
+    }
+
+    @Test
     void keepsConversationHistoryAcrossSubmissions()
             throws Exception {
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
@@ -62,11 +80,11 @@ class ManualAgentTest {
                                      ProviderResponse.finalText()
                              )
                      )) {
-            fixture.manualAgent()
+            fixture.agentSession()
                     .submit(
                             "first request"
                     );
-            fixture.manualAgent()
+            fixture.agentSession()
                     .submit(
                             "second request"
                     );
@@ -112,13 +130,13 @@ class ManualAgentTest {
                 }
         );
 
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              hookRegistry,
                              List.of()
                      )) {
-            fixture.manualAgent()
+            fixture.agentSession()
                     .submit(
                             "blocked request"
                     );
@@ -133,8 +151,8 @@ class ManualAgentTest {
     @Test
     void rollsBackAnUnrecoverableProviderError()
             throws Exception {
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
@@ -145,12 +163,12 @@ class ManualAgentTest {
             assertThrows(
                     AnthropicServiceException.class,
                     () ->
-                            fixture.manualAgent()
+                            fixture.agentSession()
                                     .submit(
                                             "failed request"
                                     )
             );
-            fixture.manualAgent()
+            fixture.agentSession()
                     .submit(
                             "retry request"
                     );
@@ -181,8 +199,8 @@ class ManualAgentTest {
     @Test
     void providerErrorSkipsMemoryCompletion()
             throws Exception {
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
@@ -193,7 +211,7 @@ class ManualAgentTest {
             assertThrows(
                     AnthropicServiceException.class,
                     () ->
-                            fixture.manualAgent()
+                            fixture.agentSession()
                                     .submit(
                                             "failed before memory completion"
                                     )
@@ -213,8 +231,8 @@ class ManualAgentTest {
     @Test
     void execRunnerReturnsZeroAfterOneSubmission()
             throws Exception {
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
@@ -223,7 +241,7 @@ class ManualAgentTest {
                      )) {
             int exitCode =
                     new ExecRunner().run(
-                            fixture.manualAgent(),
+                            fixture.agentSession(),
                             "single exec request"
                     );
 
@@ -245,8 +263,8 @@ class ManualAgentTest {
     @Test
     void execRunnerReturnsOneAfterProviderError()
             throws Exception {
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
@@ -255,7 +273,7 @@ class ManualAgentTest {
                      )) {
             int exitCode =
                     new ExecRunner().run(
-                            fixture.manualAgent(),
+                            fixture.agentSession(),
                             "failed exec request"
                     );
 
@@ -272,13 +290,13 @@ class ManualAgentTest {
     }
 
     /**
-     * 验证 InteractiveRunner 在 ManualAgent 已处理 Provider Error 后继续读取下一条输入。
+     * 验证 InteractiveRunner 在 AgentSession 已处理 Provider Error 后继续读取下一条输入。
      */
     @Test
     void interactiveRunnerContinuesAfterProviderError()
             throws Exception {
-        try (ManualAgentFixture fixture =
-                     new ManualAgentFixture(
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
@@ -295,7 +313,7 @@ class ManualAgentTest {
             new InteractiveRunner(
                     scanner
             ).run(
-                    fixture.manualAgent()
+                    fixture.agentSession()
             );
 
             assertEquals(
@@ -349,7 +367,7 @@ class ManualAgentTest {
         }
     }
 
-    private static final class ManualAgentFixture
+    private static final class AgentSessionFixture
             implements AutoCloseable {
 
         private final List<String> requestBodies =
@@ -359,9 +377,10 @@ class ManualAgentTest {
         private final HttpServer server;
         private final AnthropicClient client;
         private final BackgroundTaskScheduler backgroundScheduler;
-        private final ManualAgent manualAgent;
+        private final SessionState sessionState;
+        private final AgentSession agentSession;
 
-        private ManualAgentFixture(
+        private AgentSessionFixture(
                 Path workspace,
                 HookRegistry hookRegistry,
                 List<ProviderResponse> responses
@@ -374,7 +393,7 @@ class ManualAgentTest {
             );
         }
 
-        private ManualAgentFixture(
+        private AgentSessionFixture(
                 Path workspace,
                 HookRegistry hookRegistry,
                 List<ProviderResponse> responses,
@@ -413,8 +432,8 @@ class ManualAgentTest {
             backgroundScheduler =
                     new BackgroundTaskScheduler();
 
-            AgentState agentState =
-                    new AgentState(
+            sessionState =
+                    new SessionState(
                             memoryEnabled,
                             ToolApprovalMode.BYPASS,
                             workspace,
@@ -424,7 +443,7 @@ class ManualAgentTest {
                     );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            agentState
+                            sessionState
                     );
             SystemPromptManager systemPromptManager =
                     new SystemPromptManager(
@@ -432,7 +451,7 @@ class ManualAgentTest {
                     );
             MemoryRuntime memoryRuntime =
                     new MemoryRuntime(
-                            agentState,
+                            sessionState,
                             client,
                             "test-model",
                             paths
@@ -442,13 +461,13 @@ class ManualAgentTest {
                             client,
                             "test-model",
                             systemPromptManager,
-                            agentState,
+                            sessionState,
                             new ToolRegistry(),
                             new ToolApprovalGate(
                                     new DefaultToolApprovalPolicy(
                                             paths
                                     ),
-                                    agentState,
+                                    sessionState,
                                     null
                             ),
                             hookRegistry,
@@ -470,18 +489,22 @@ class ManualAgentTest {
                                     List.of()
                             )
                     );
-            manualAgent =
-                    new ManualAgent(
+            agentSession =
+                    new AgentSession(
                             agentLoop,
                             memoryRuntime,
                             hookRegistry,
                             systemPromptManager,
-                            agentState
+                            sessionState
                     );
         }
 
-        private ManualAgent manualAgent() {
-            return manualAgent;
+        private AgentSession agentSession() {
+            return agentSession;
+        }
+
+        private SessionState sessionState() {
+            return sessionState;
         }
 
         private List<String> requestBodies() {

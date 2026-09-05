@@ -2,7 +2,7 @@ package dev.learn.agent.manual.systemprompt;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.memory.MemoryEntry;
 import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemoryRuntime;
@@ -39,8 +39,8 @@ class MemorySystemPromptProviderTest {
         AnthropicClient client =
                 testClient();
         try {
-            AgentState agentState =
-                    new AgentState(
+            SessionState sessionState =
+                    new SessionState(
                             true,
                             ToolApprovalMode.BYPASS,
                             workspace,
@@ -50,7 +50,7 @@ class MemorySystemPromptProviderTest {
                     );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            agentState
+                            sessionState
                     );
             MemoryRepository repository =
                     new MemoryRepository(
@@ -66,7 +66,7 @@ class MemorySystemPromptProviderTest {
             );
             MemoryRuntime runtime =
                     new MemoryRuntime(
-                            agentState,
+                            sessionState,
                             client,
                             "test-model",
                             paths
@@ -83,7 +83,7 @@ class MemorySystemPromptProviderTest {
             SystemPrompt prompt =
                     manager.refreshFrom(
                             RefreshScope.APPLICATION,
-                            agentState
+                            sessionState
                     );
 
             assertTrue(
@@ -124,8 +124,8 @@ class MemorySystemPromptProviderTest {
         AnthropicClient client =
                 testClient();
         try {
-            AgentState agentState =
-                    new AgentState(
+            SessionState sessionState =
+                    new SessionState(
                             true,
                             ToolApprovalMode.BYPASS,
                             workspace,
@@ -135,7 +135,7 @@ class MemorySystemPromptProviderTest {
                     );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            agentState
+                            sessionState
                     );
             MemoryRepository repository =
                     new MemoryRepository(
@@ -151,7 +151,7 @@ class MemorySystemPromptProviderTest {
             );
             MemoryRuntime runtime =
                     new MemoryRuntime(
-                            agentState,
+                            sessionState,
                             client,
                             "test-model",
                             paths
@@ -167,7 +167,7 @@ class MemorySystemPromptProviderTest {
             assertTrue(
                     manager.refreshFrom(
                                     RefreshScope.APPLICATION,
-                                    agentState
+                                    sessionState
                             )
                             .content()
                             .contains(
@@ -175,13 +175,13 @@ class MemorySystemPromptProviderTest {
                             )
             );
 
-            agentState.setMemoryEnabled(
+            sessionState.setMemoryEnabled(
                     false
             );
             assertFalse(
                     manager.refreshFrom(
                                     RefreshScope.SESSION,
-                                    agentState
+                                    sessionState
                             )
                             .content()
                             .contains(
@@ -189,13 +189,13 @@ class MemorySystemPromptProviderTest {
                             )
             );
 
-            agentState.setMemoryEnabled(
+            sessionState.setMemoryEnabled(
                     true
             );
             assertTrue(
                     manager.refreshFrom(
                                     RefreshScope.SESSION,
-                                    agentState
+                                    sessionState
                             )
                             .content()
                             .contains(
@@ -216,8 +216,8 @@ class MemorySystemPromptProviderTest {
         AnthropicClient client =
                 testClient();
         try {
-            AgentState agentState =
-                    new AgentState(
+            SessionState sessionState =
+                    new SessionState(
                             false,
                             ToolApprovalMode.BYPASS,
                             workspace,
@@ -227,11 +227,11 @@ class MemorySystemPromptProviderTest {
                     );
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
-                            agentState
+                            sessionState
                     );
             MemoryRuntime runtime =
                     new MemoryRuntime(
-                            agentState,
+                            sessionState,
                             client,
                             "test-model",
                             paths

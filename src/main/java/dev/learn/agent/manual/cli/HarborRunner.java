@@ -1,6 +1,6 @@
 package dev.learn.agent.manual.cli;
 
-import dev.learn.agent.manual.ManualAgent;
+import dev.learn.agent.manual.AgentSession;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -13,7 +13,7 @@ import java.util.Base64;
 import java.util.Objects;
 
 /**
- * 通过 Harbor 的机器输入通道，把多个 Turn 提交给同一个 ManualAgent。
+ * 通过 Harbor 的机器输入通道，把多个 Turn 提交给同一个 AgentSession。
  */
 public final class HarborRunner {
 
@@ -33,15 +33,15 @@ public final class HarborRunner {
     /**
      * 持续接收 Harbor instruction，并顺序提交给当前 Trial 唯一的父 Agent。
      *
-     * @param manualAgent 当前 Harbor Trial 唯一的父 Agent
+     * @param agentSession 当前 Harbor Trial 唯一的父 Agent
      * @throws IOException FIFO 通信或 Turn 记忆读写失败
      */
     public void run(
-            ManualAgent manualAgent
+            AgentSession agentSession
     ) throws IOException {
         Objects.requireNonNull(
-                manualAgent,
-                "ManualAgent 不能为空"
+                agentSession,
+                "AgentSession 不能为空"
         );
 
         int turnNumber = 0;
@@ -69,7 +69,7 @@ public final class HarborRunner {
             );
 
             // 2. 一条 Harbor instruction 只调用一次现有 submit()。
-            manualAgent.submit(
+            agentSession.submit(
                     instruction
             );
 

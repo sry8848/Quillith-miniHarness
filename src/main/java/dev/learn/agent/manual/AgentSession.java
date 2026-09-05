@@ -19,24 +19,24 @@ import java.util.Objects;
 /**
  * 持有父 Agent 的会话历史，并编排一条用户消息的完整 Turn 生命周期。
  */
-public final class ManualAgent {
+public final class AgentSession {
 
     private final AgentLoop agentLoop;
     private final MemoryRuntime memoryRuntime;
     private final HookRegistry hookRegistry;
     private final SystemPromptManager systemPromptManager;
-    private final AgentState agentState;
+    private final SessionState sessionState;
     private final List<MessageParam> history = new ArrayList<>();
 
     /**
-     * 创建绑定一份父会话历史的 ManualAgent。
+     * 创建绑定一份父会话历史的 AgentSession。
      */
-    public ManualAgent(
+    public AgentSession(
             AgentLoop agentLoop,
             MemoryRuntime memoryRuntime,
             HookRegistry hookRegistry,
             SystemPromptManager systemPromptManager,
-            AgentState agentState
+            SessionState sessionState
     ) {
         this.agentLoop =
                 Objects.requireNonNull(
@@ -58,10 +58,10 @@ public final class ManualAgent {
                         systemPromptManager,
                         "SystemPromptManager 不能为空"
                 );
-        this.agentState =
+        this.sessionState =
                 Objects.requireNonNull(
-                        agentState,
-                        "AgentState 不能为空"
+                        sessionState,
+                        "SessionState 不能为空"
                 );
     }
 
@@ -99,7 +99,7 @@ public final class ManualAgent {
         // 2. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
-                agentState
+                sessionState
         );
 
         String recalledMemories =
@@ -146,7 +146,7 @@ public final class ManualAgent {
                         history
                 );
 
-        // 6. 核心 Model/Tool 循环保持不变，ManualAgent 只处理 Turn 外层行为。
+        // 6. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
         try {
             agentLoop.run(
                     history,
@@ -191,7 +191,14 @@ public final class ManualAgent {
      * 返回当前父会话是否启用记忆。
      */
     public boolean memoryEnabled() {
-        return agentState.memoryEnabled();
+        return sessionState.memoryEnabled();
+    }
+
+    /**
+     * 返回当前 Session 的稳定 ID。
+     */
+    public String sessionId() {
+        return sessionState.sessionId();
     }
 
     /**
@@ -200,12 +207,12 @@ public final class ManualAgent {
     public void setMemoryEnabled(
             boolean enabled
     ) {
-        agentState.setMemoryEnabled(
+        sessionState.setMemoryEnabled(
                 enabled
         );
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
-                agentState
+                sessionState
         );
     }
 

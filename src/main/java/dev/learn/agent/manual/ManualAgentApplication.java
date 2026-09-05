@@ -80,8 +80,8 @@ public final class ManualAgentApplication {
                 List.of(cwd);
 
         // 5. 一次启动只创建一份 Session 状态，父 Agent 和 SubAgent 共享它。
-        AgentState agentState =
-                new AgentState(
+        SessionState sessionState =
+                new SessionState(
                         options.memoryEnabled(),
                         options.mode() == ApplicationOptions.Mode.INTERACTIVE
                                 ? ToolApprovalMode.ASK
@@ -97,19 +97,19 @@ public final class ManualAgentApplication {
                 switch (options.mode()) {
                     case INTERACTIVE -> {
                         runInteractive(
-                                agentState,
+                                sessionState,
                                 options
                         );
                         yield 0;
                     }
                     case EXEC ->
                             runExec(
-                                    agentState,
+                                    sessionState,
                                     options
                             );
                     case HARBOR -> {
                         runHarbor(
-                                agentState
+                                sessionState
                         );
                         yield 0;
                     }
@@ -124,18 +124,18 @@ public final class ManualAgentApplication {
     /**
      * 保持现有 transcript、Scanner 和 ASK 审批行为运行交互模式。
      *
-     * @param agentState 当前 CLI Session 状态
+     * @param sessionState 当前 CLI Session 状态
      * @param options 已解析的交互模式选项
      * @throws IOException transcript 或 Runtime 初始化失败
      */
     private static void runInteractive(
-            AgentState agentState,
+            SessionState sessionState,
             ApplicationOptions options
     ) throws IOException {
         // 1. Interactive 继续保存完整终端 transcript，保持原有本地会话行为。
         Path transcriptDirectory =
                 createTerminalTranscriptDirectory(
-                        agentState
+                        sessionState
                 );
         String transcriptTimestamp =
                 DateTimeFormatter.ofPattern(
@@ -189,13 +189,13 @@ public final class ManualAgentApplication {
         try {
             try (AgentRuntime runtime =
                          AgentRuntime.create(
-                                 agentState,
+                                 sessionState,
                                  scanner
                          )) {
                 new InteractiveRunner(
                         scanner
                 ).run(
-                        runtime.manualAgent()
+                        runtime.agentSession()
                 );
             }
         } finally {
@@ -206,16 +206,16 @@ public final class ManualAgentApplication {
     /**
      * 创建当前 Session 的终端 transcript 目录。
      *
-     * @param agentState 当前 CLI Session 状态
+     * @param sessionState 当前 CLI Session 状态
      * @return agentHome 下已经创建的终端 transcript 目录
      * @throws IOException 目录创建失败
      */
     static Path createTerminalTranscriptDirectory(
-            AgentState agentState
+            SessionState sessionState
     ) throws IOException {
         // 1. 终端运行记录属于 Agent 自身，不随当前 workspace 改变位置。
         Path transcriptDirectory =
-                agentState.agentHome()
+                sessionState.agentHome()
                         .resolve(".task_outputs")
                         .resolve("transcripts");
 
@@ -229,24 +229,24 @@ public final class ManualAgentApplication {
     /**
      * 在 Harbor 隔离环境中使用现有 BYPASS 模式执行一条任务。
      *
-     * @param agentState 当前 CLI Session 状态
+     * @param sessionState 当前 CLI Session 状态
      * @param options 已解析的 exec 模式选项
      * @return 正常完成返回 0，不可恢复 Provider Error 返回 1
      * @throws IOException Runtime 初始化或 Turn 记忆读写失败
      */
     private static int runExec(
-            AgentState agentState,
+            SessionState sessionState,
             ApplicationOptions options
     ) throws IOException {
         // 1. Exec 不创建 Scanner 和终端 transcript，输出直接交给 Harbor 捕获。
         try (AgentRuntime runtime =
                      AgentRuntime.create(
-                             agentState,
+                             sessionState,
                              null
                      )) {
             // 2. BYPASS 复用现有权限模式；安全边界由不暴露宿主目录的 Harbor 环境提供。
             return new ExecRunner().run(
-                    runtime.manualAgent(),
+                    runtime.agentSession(),
                     options.instruction()
             );
         }
@@ -255,21 +255,21 @@ public final class ManualAgentApplication {
     /**
      * 在 Harbor 隔离环境中保持一份 Interactive Session 并处理多个 Turn。
      *
-     * @param agentState 当前 Harbor Trial 唯一的 Session 状态
+     * @param sessionState 当前 Harbor Trial 唯一的 Session 状态
      * @throws IOException Runtime 初始化、FIFO 通信或 Turn 执行失败
      */
     private static void runHarbor(
-            AgentState agentState
+            SessionState sessionState
     ) throws IOException {
         // 1. 一个 Harbor 进程只创建一份 Runtime，所有 Turn 共用它。
         try (AgentRuntime runtime =
                      AgentRuntime.create(
-                             agentState,
+                             sessionState,
                              null
                      )) {
             // Harbor 使用 BYPASS，不创建人工审批 Scanner 或终端 transcript。
             new HarborRunner().run(
-                    runtime.manualAgent()
+                    runtime.agentSession()
             );
         }
     }

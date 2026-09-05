@@ -1,6 +1,6 @@
 package dev.learn.agent.manual.tool.approval;
 
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.tool.ToolCall;
 
 import java.util.Objects;
@@ -17,7 +17,7 @@ public final class ToolApprovalGate {
     private final ToolApprovalPolicy policy;
 
     /* 负责提供每次调用都应读取的当前审批模式。 */
-    private final AgentState agentState;
+    private final SessionState sessionState;
 
     /* ASK 模式使用的共享终端输入；BYPASS 模式可以为空。 */
     private final Scanner scanner;
@@ -26,12 +26,12 @@ public final class ToolApprovalGate {
      * 创建工具审批 Gate。
      *
      * @param policy 审批分类策略
-     * @param agentState 当前 CLI Session 状态
+     * @param sessionState 当前 CLI Session 状态
      * @param scanner ASK 模式读取用户选择的 Scanner，BYPASS 模式可以为空
      */
     public ToolApprovalGate(
             ToolApprovalPolicy policy,
-            AgentState agentState,
+            SessionState sessionState,
             Scanner scanner
     ) {
         this.policy =
@@ -40,13 +40,13 @@ public final class ToolApprovalGate {
                         "ToolApprovalPolicy 不能为空"
                 );
 
-        this.agentState =
+        this.sessionState =
                 Objects.requireNonNull(
-                        agentState,
-                        "AgentState 不能为空"
+                        sessionState,
+                        "SessionState 不能为空"
                 );
 
-        if (agentState.approvalMode() == ToolApprovalMode.ASK) {
+        if (sessionState.approvalMode() == ToolApprovalMode.ASK) {
             this.scanner =
                     Objects.requireNonNull(
                             scanner,
@@ -61,7 +61,7 @@ public final class ToolApprovalGate {
      * 判断工具调用是否可以继续执行。
      *
      * <p>无论当前模式是什么，都先调用 Policy；BYPASS 只跳过询问，
-     * 不改变 Policy 的分类结果。审批模式在每次调用时从 AgentState 读取。</p>
+     * 不改变 Policy 的分类结果。审批模式在每次调用时从 SessionState 读取。</p>
      *
      * @param toolCall 实际准备执行的完整工具调用
      * @return true 表示允许进入 ToolRegistry，false 表示本次不执行
@@ -82,7 +82,7 @@ public final class ToolApprovalGate {
             return true;
         }
 
-        if (agentState.approvalMode() == ToolApprovalMode.BYPASS) {
+        if (sessionState.approvalMode() == ToolApprovalMode.BYPASS) {
             return true;
         }
 

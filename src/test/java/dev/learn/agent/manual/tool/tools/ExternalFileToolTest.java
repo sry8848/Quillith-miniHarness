@@ -4,7 +4,7 @@ package dev.learn.agent.manual.tool.tools;
 // 引入 JSON 输入、文件工具和 Workspace 路径解析类型。
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.tool.NonRetryableToolException;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
@@ -48,7 +48,7 @@ class ExternalFileToolTest {
                 outsideDirectory.resolve("external.txt");
         WorkspacePathResolver paths =
                 new WorkspacePathResolver(
-                        new AgentState(
+                        new SessionState(
                                 false,
                                 ToolApprovalMode.BYPASS,
                                 workspace,
@@ -141,7 +141,7 @@ class ExternalFileToolTest {
         );
         WorkspacePathResolver paths =
                 new WorkspacePathResolver(
-                        new AgentState(
+                        new SessionState(
                                 false,
                                 ToolApprovalMode.BYPASS,
                                 workspace,

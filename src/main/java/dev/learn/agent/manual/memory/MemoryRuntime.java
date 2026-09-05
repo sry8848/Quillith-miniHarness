@@ -2,7 +2,7 @@ package dev.learn.agent.manual.memory;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.MessageParam;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 
 import java.io.IOException;
@@ -11,15 +11,15 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 统一管理一次应用会话中的记忆能力，并消费 AgentState 中的开关状态。
+ * 统一管理一次应用会话中的记忆能力，并消费 SessionState 中的开关状态。
  *
  * 记忆 Provider、按需召回、回合结束提取和整理都通过这里判断是否启用，
  * 避免应用入口在多个阶段重复维护同一个开关。
  */
 public final class MemoryRuntime {
 
-    // 当前 CLI Session 的记忆开关由 AgentState 唯一持有。
-    private final AgentState agentState;
+    // 当前 CLI Session 的记忆开关由 SessionState 唯一持有。
+    private final SessionState sessionState;
 
     // 记忆能力使用的持久化仓库和模型服务。
     private final MemoryRepository repository;
@@ -30,20 +30,20 @@ public final class MemoryRuntime {
     /**
      * 创建记忆运行时。
      *
-     * @param agentState 当前 CLI Session 状态
+     * @param sessionState 当前 CLI Session 状态
      * @param client 应用共享的模型客户端
      * @param model 记忆相关模型调用使用的模型名称
      * @param paths 当前工作区路径边界
      */
     public MemoryRuntime(
-            AgentState agentState,
+            SessionState sessionState,
             AnthropicClient client,
             String model,
             WorkspacePathResolver paths
     ) {
-        this.agentState = Objects.requireNonNull(
-                agentState,
-                "AgentState 不能为空"
+        this.sessionState = Objects.requireNonNull(
+                sessionState,
+                "SessionState 不能为空"
         );
 
         this.repository =
@@ -83,7 +83,7 @@ public final class MemoryRuntime {
      * @return 原始索引文本；记忆关闭或没有索引时为空
      */
     public Optional<String> loadIndex() {
-        if (!agentState.memoryEnabled()) {
+        if (!sessionState.memoryEnabled()) {
             return Optional.empty();
         }
 
@@ -119,7 +119,7 @@ public final class MemoryRuntime {
                 "query 不能为 null"
         );
 
-        if (!agentState.memoryEnabled()) {
+        if (!sessionState.memoryEnabled()) {
             return "";
         }
 
@@ -142,7 +142,7 @@ public final class MemoryRuntime {
                 "history 不能为 null"
         );
 
-        if (!agentState.memoryEnabled()) {
+        if (!sessionState.memoryEnabled()) {
             return List.of();
         }
 
@@ -166,7 +166,7 @@ public final class MemoryRuntime {
                 "记忆快照不能为 null"
         );
 
-        if (!agentState.memoryEnabled()) {
+        if (!sessionState.memoryEnabled()) {
             return MemoryTurnResult.NONE;
         }
 

@@ -1,6 +1,6 @@
 package dev.learn.agent.manual.utils;
 
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 以 Workspace 为相对路径基准，并按 AgentState.allowedRoots() 约束文件工具的真实路径。
+ * 以 Workspace 为相对路径基准，并按 sessionState.allowedRoots() 约束文件工具的真实路径。
  *
  * <p>这里不是操作系统沙盒。它只负责路径解析和 allowed-roots 边界分类；Bash 等宿主进程
  * 工具仍由各自的执行环境负责边界。</p>
@@ -18,35 +18,35 @@ import java.util.Objects;
 public final class WorkspacePathResolver {
 
     /* Session 创建阶段已经确定路径集合，解析器只持有共享状态，不复制自己的边界配置。 */
-    private final AgentState agentState;
+    private final SessionState sessionState;
 
     /**
      * 创建共享路径解析器。
      *
-     * @param agentState 当前 CLI Session 的路径状态
+     * @param sessionState 当前 CLI Session 的路径状态
      * @throws IOException workspace 或 allowed root 不是可用目录
      */
     public WorkspacePathResolver(
-            AgentState agentState
+            SessionState sessionState
     ) throws IOException {
-        this.agentState =
+        this.sessionState =
                 Objects.requireNonNull(
-                        agentState,
-                        "AgentState 不能为空"
+                        sessionState,
+                        "SessionState 不能为空"
                 );
 
         /*
          * 这些路径应在 Session 装配阶段已经转成真实绝对目录；这里仅验证装配结果可用，
          * 不检查集合长度，也不把多根配置收窄成单根配置。
          */
-        if (!Files.isDirectory(agentState.workspace())) {
+        if (!Files.isDirectory(sessionState.workspace())) {
             throw new IllegalArgumentException(
                     "Workspace 不是目录："
-                            + agentState.workspace()
+                            + sessionState.workspace()
             );
         }
 
-        for (Path allowedRoot : agentState.allowedRoots()) {
+        for (Path allowedRoot : sessionState.allowedRoots()) {
             if (!Files.isDirectory(allowedRoot)) {
                 throw new IllegalArgumentException(
                         "Allowed root 不是目录："
@@ -60,14 +60,14 @@ public final class WorkspacePathResolver {
      * 返回相对路径解析基准 Workspace。
      */
     public Path workspace() {
-        return agentState.workspace();
+        return sessionState.workspace();
     }
 
     /**
      * 返回当前 Session 的可访问目录集合。
      */
     public List<Path> allowedRoots() {
-        return agentState.allowedRoots();
+        return sessionState.allowedRoots();
     }
 
     /**

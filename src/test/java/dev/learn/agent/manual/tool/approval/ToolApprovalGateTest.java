@@ -3,7 +3,7 @@ package dev.learn.agent.manual.tool.approval;
 
 // 引入工具调用和测试注解。
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import dev.learn.agent.manual.AgentState;
+import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.tool.ToolCall;
 import org.junit.jupiter.api.Test;
 
@@ -21,12 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 验证审批 Gate 只组合 Policy、AgentState 和用户询问，不执行工具。
+ * 验证审批 Gate 只组合 Policy、SessionState 和用户询问，不执行工具。
  */
 class ToolApprovalGateTest {
 
     /**
-     * Given Policy 返回 NOT_REQUIRED，when AgentState 为 ASK，then 直接放行且不读取 Scanner。
+     * Given Policy 返回 NOT_REQUIRED，when SessionState 为 ASK，then 直接放行且不读取 Scanner。
      */
     @Test
     void askModeDoesNotPromptForNotRequiredCall() {
@@ -34,7 +34,7 @@ class ToolApprovalGateTest {
                      new Scanner(
                              new StringReader("")
                      )) {
-            AgentState state =
+            SessionState state =
                     state(ToolApprovalMode.ASK);
             ToolApprovalGate gate =
                     new ToolApprovalGate(
@@ -62,7 +62,7 @@ class ToolApprovalGateTest {
     }
 
     /**
-     * Given Policy 返回 REQUIRED，when AgentState 为 ASK 且输入 y 或 yes，then 允许工具继续执行。
+     * Given Policy 返回 REQUIRED，when SessionState 为 ASK 且输入 y 或 yes，then 允许工具继续执行。
      */
     @Test
     void askModeAllowsExplicitApproval() {
@@ -97,7 +97,7 @@ class ToolApprovalGateTest {
     }
 
     /**
-     * Given Policy 返回 REQUIRED，when AgentState 为 ASK 且输入非 y，then 阻止本次工具调用。
+     * Given Policy 返回 REQUIRED，when SessionState 为 ASK 且输入非 y，then 阻止本次工具调用。
      */
     @Test
     void askModeRejectsNonApprovalInput() {
@@ -119,7 +119,7 @@ class ToolApprovalGateTest {
     }
 
     /**
-     * Given Policy 返回 REQUIRED，when AgentState 为 BYPASS，then 不读取 Scanner 也直接放行。
+     * Given Policy 返回 REQUIRED，when SessionState 为 BYPASS，then 不读取 Scanner 也直接放行。
      */
     @Test
     void bypassModeAllowsRequiredCallWithoutScanner() {
@@ -215,7 +215,7 @@ class ToolApprovalGateTest {
     }
 
     /**
-     * Given 同一个 Gate，when AgentState 在运行中切换模式，then 后续调用读取新模式。
+     * Given 同一个 Gate，when SessionState 在运行中切换模式，then 后续调用读取新模式。
      */
     @Test
     void readsApprovalModeFromSharedStateForEveryCall() {
@@ -223,7 +223,7 @@ class ToolApprovalGateTest {
                      new Scanner(
                              new StringReader("n\ny\n")
                      )) {
-            AgentState state =
+            SessionState state =
                     state(ToolApprovalMode.ASK);
             ToolApprovalGate gate =
                     new ToolApprovalGate(
@@ -264,7 +264,7 @@ class ToolApprovalGateTest {
      */
     @Test
     void reportsMissingScannerWhenStateChangesToAsk() {
-        AgentState state =
+        SessionState state =
                 state(ToolApprovalMode.BYPASS);
         ToolApprovalGate gate =
                 new ToolApprovalGate(
@@ -285,12 +285,12 @@ class ToolApprovalGateTest {
     }
 
     /** 创建测试用 Session 状态；路径值在 Gate 测试中不参与判断。 */
-    private static AgentState state(
+    private static SessionState state(
             ToolApprovalMode mode
     ) {
         Path workspace =
                 Path.of("workspace");
-        return new AgentState(
+        return new SessionState(
                 false,
                 mode,
                 Path.of("agent-home"),
