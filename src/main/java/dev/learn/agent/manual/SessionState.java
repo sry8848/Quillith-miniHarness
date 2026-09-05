@@ -46,10 +46,43 @@ public final class SessionState {
             List<Path> allowedRoots,
             Path gitRoot
     ) {
+        this(
+                UUID.randomUUID()
+                        .toString(),
+                memoryEnabled,
+                approvalMode,
+                agentHome,
+                workspace,
+                allowedRoots,
+                gitRoot
+        );
+    }
+
+    /**
+     * 使用指定 Session ID 创建一个 Session 状态。
+     *
+     * @param sessionId 已存在或新创建的 Session ID
+     * @param memoryEnabled 初始是否启用记忆
+     * @param approvalMode 初始工具审批模式
+     * @param agentHome Agent 自身数据和资源目录
+     * @param workspace 默认工作目录及相对路径解析基准
+     * @param allowedRoots Agent 可访问和修改的真实目录集合
+     * @param gitRoot 当前 Git 仓库根目录；未发现时为 {@code null}
+     */
+    public SessionState(
+            String sessionId,
+            boolean memoryEnabled,
+            ToolApprovalMode approvalMode,
+            Path agentHome,
+            Path workspace,
+            List<Path> allowedRoots,
+            Path gitRoot
+    ) {
         // 1. 创建本次 Session 的稳定 ID。
         this.sessionId =
-                UUID.randomUUID()
-                        .toString();
+                SessionStore.normalizeSessionId(
+                        sessionId
+                );
 
         // 2. 保存运行期可变状态和创建时确定的路径上下文。
         this.memoryEnabled = memoryEnabled;

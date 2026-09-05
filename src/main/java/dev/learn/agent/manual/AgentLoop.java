@@ -151,6 +151,9 @@ public final class AgentLoop {
     // 设计意图：只限制模型持续请求工具的业务轮次，不统计摘要请求和恢复重试，也不作为 API 计费上限。
     private final int maxModelRounds;
 
+    // 保存父 AgentSession 的恢复持久化边界；子 Agent 使用禁用实例。
+    private final SessionStore sessionStore;
+
     // 保存模型请求级错误的按序恢复分派器。
     private final ModelRequestRecoveryManager recoveryManager;
 
@@ -168,6 +171,7 @@ public final class AgentLoop {
      * @param outputPrinter 当前 Agent 的流式输出打印器
      * @param backgroundScheduler 当前 AgentLoop 的后台调度器
      * @param maxModelRounds 最大业务模型轮次
+     * @param sessionStore 当前主会话历史的持久化边界
      * @param recoveryManager 模型请求级错误恢复分派器
      * @throws NullPointerException 任一对象依赖为 null 时抛出
      * @throws IllegalArgumentException 最大业务模型轮次不大于 0 时抛出
@@ -184,6 +188,7 @@ public final class AgentLoop {
             StreamOutputPrinter outputPrinter,
             BackgroundTaskScheduler backgroundScheduler,
             int maxModelRounds,
+            SessionStore sessionStore,
             ModelRequestRecoveryManager recoveryManager
     ) {
         // 校验并保存模型客户端。
@@ -268,6 +273,13 @@ public final class AgentLoop {
         // 设计意图：用明确轮次上限阻止模型持续请求工具而无法结束任务。
         this.maxModelRounds =
                 maxModelRounds;
+
+        // 保存 Session 恢复持久化边界。
+        this.sessionStore =
+                Objects.requireNonNull(
+                        sessionStore,
+                        "SessionStore 不能为空"
+                );
 
         // 保存模型请求恢复分派器；具体错误规则不进入 AgentLoop。
         this.recoveryManager =
@@ -369,6 +381,9 @@ public final class AgentLoop {
                                 )
                                 .build()
                 );
+                saveRunningHistory(
+                        messages
+                );
 
                 // 记录本轮实际追加的 Hook 上下文数量。
                 LOGGER.debug(
@@ -413,6 +428,9 @@ public final class AgentLoop {
             messages.addAll(
                     requestMessages
             );
+            saveRunningHistory(
+                    messages
+            );
 
             // 声明当前模型流结果和工具调用状态。
             StreamTurn turn;
@@ -432,7 +450,8 @@ public final class AgentLoop {
                                     createRequest(
                                             messages,
                                             turnContext
-                                    )
+                                    ),
+                                    messages
                             );
                 } catch (AnthropicServiceException exception) {
                     // HTTP Provider Error 交给请求级 Handler；成功恢复后回到同一主循环。
@@ -495,6 +514,9 @@ public final class AgentLoop {
                             messages,
                             turn
                     );
+                    saveRunningHistory(
+                            messages
+                    );
 
                     // 中断恢复提交的工具结果尚未被下一次模型请求确认，继续保留其 pending ID。
                     requestRecoveryState.recordPendingToolResults(
@@ -527,6 +549,9 @@ public final class AgentLoop {
                             toAssistantMessage(
                                     turn.assistantContent()
                             )
+                    );
+                    saveRunningHistory(
+                            messages
                     );
                 }
 
@@ -573,6 +598,9 @@ public final class AgentLoop {
                                         OUTPUT_CONTINUATION_PROMPT
                                 )
                                 .build()
+                );
+                saveRunningHistory(
+                        messages
                 );
 
                 // 累加当前回合的输出续写次数。
@@ -632,6 +660,9 @@ public final class AgentLoop {
                                             continuationMessage
                                     )
                                     .build()
+                    );
+                    saveRunningHistory(
+                            messages
                     );
 
                     // 开始下一业务模型轮次，让模型继续处理任务。
@@ -693,6 +724,9 @@ public final class AgentLoop {
                             resultMessage
                     )
             );
+            saveRunningHistory(
+                    messages
+            );
 
             // 记录这批结果，Provider 在下一次请求拒绝输入时只替换对应工具结果。
             requestRecoveryState.recordPendingToolResults(
@@ -734,7 +768,8 @@ public final class AgentLoop {
      */
     @WithSpan("agent.iteration")
     private StreamTurn runIteration(
-            MessageCreateParams request
+            MessageCreateParams request,
+            List<MessageParam> messages
     ) {
         StreamTurn turn;
         Context iterationContext = Context.current();
@@ -744,7 +779,13 @@ public final class AgentLoop {
                              toolRegistry,
                              backgroundScheduler
                      )) {
-            turn = streamModel(request, toolDispatcher, iterationContext);
+            turn =
+                    streamModel(
+                            request,
+                            messages,
+                            toolDispatcher,
+                            iterationContext
+                    );
         }
 
         // 前台调度器关闭后，所有本轮工具已经结束，可以在 iteration 内按原顺序生成结果。
@@ -758,6 +799,7 @@ public final class AgentLoop {
     @WithSpan("llm.call")
     private StreamTurn streamModel(
             MessageCreateParams request,
+            List<MessageParam> messages,
             ToolCallDispatcher toolDispatcher,
             Context iterationContext
     ) {
@@ -1040,6 +1082,19 @@ public final class AgentLoop {
                                         completedTool
                                 );
 
+                                // 把完整工具调用加入 assistant 协议内容。
+                                assistantContent.add(
+                                        ContentBlockParam.ofToolUse(
+                                                completedTool.toParam()
+                                        )
+                                );
+
+                                // 创建工具开始时可持久化的不可变 assistant 快照。
+                                List<ContentBlockParam> startedAssistantContent =
+                                        List.copyOf(
+                                                assistantContent
+                                        );
+
                                 // 对合法输入按执行模式分流，对非法输入直接创建失败结果。
                                 CompletableFuture<ToolExecutionResult> future;
 
@@ -1052,7 +1107,11 @@ public final class AgentLoop {
                                                     ),
                                                     () -> executeInIteration(
                                                             iterationContext,
-                                                            completedTool
+                                                            completedTool,
+                                                            () -> saveRunningHistoryWithAssistant(
+                                                                    messages,
+                                                                    startedAssistantContent
+                                                            )
                                                     )
                                             );
                                 } else {
@@ -1063,13 +1122,6 @@ public final class AgentLoop {
                                                     )
                                             );
                                 }
-
-                                // 把完整工具调用加入 assistant 协议内容。
-                                assistantContent.add(
-                                        ContentBlockParam.ofToolUse(
-                                                completedTool.toParam()
-                                        )
-                                );
 
                                 // 按模型调用顺序保存工具元数据和异步结果。
                                 toolExecutions.add(
@@ -1358,6 +1410,9 @@ public final class AgentLoop {
                                 )
                                 .build()
                 );
+                saveRunningHistory(
+                        messages
+                );
             }
             return;
         }
@@ -1392,6 +1447,9 @@ public final class AgentLoop {
                                 userContent
                         )
                         .build()
+        );
+        saveRunningHistory(
+                messages
         );
     }
 
@@ -1638,14 +1696,61 @@ public final class AgentLoop {
     }
 
     /**
+     * 保存当前主会话历史的 RUNNING 快照。
+     *
+     * @param messages 当前真实会话历史
+     */
+    private void saveRunningHistory(
+            List<MessageParam> messages
+    ) {
+        sessionStore.saveRunning(
+                List.copyOf(
+                        messages
+                )
+        );
+    }
+
+    /**
+     * 保存当前历史加本次已完成 assistant 内容块的 RUNNING 快照。
+     *
+     * @param messages 当前真实会话历史
+     * @param assistantContent 当前流中已经完整关闭的 assistant 内容块
+     */
+    private void saveRunningHistoryWithAssistant(
+            List<MessageParam> messages,
+            List<ContentBlockParam> assistantContent
+    ) {
+        // 1. 先复制真实历史，再临时追加尚未成对提交的 assistant 内容。
+        List<MessageParam> snapshot =
+                new ArrayList<>(
+                        messages
+                );
+
+        if (!assistantContent.isEmpty()) {
+            snapshot.add(
+                    toAssistantMessage(
+                            assistantContent
+                    )
+            );
+        }
+
+        // 工具开始后保存未配对 tool_use，是为了重启恢复时能生成 UNKNOWN tool_result。
+        sessionStore.saveRunning(
+                snapshot
+        );
+    }
+
+    /**
      * 执行一个已经完整关闭的工具调用。
      *
      * @param toolUse 已收到 content_block_stop 的工具调用
+     * @param markToolStarted 工具进入真实执行边界前的持久化动作
      * @return 保留真实成功或失败状态的工具执行结果
      */
     @WithSpan("tool.execute")
     private ToolExecutionResult executeTool(
-            ToolUseBlock toolUse
+            ToolUseBlock toolUse,
+            Runnable markToolStarted
     ) {
         // 使用真实工具名称区分本地工具、task 子 Agent 工具和 MCP 工具。
         Span.current().updateName(
@@ -1694,6 +1799,9 @@ public final class AgentLoop {
 
                 // 审批发生在真实工具执行之前，Gate 不执行工具本身。
                 if (approvalGate.approve(effectiveToolCall)) {
+                    // 工具已通过审批，下一步会进入真实执行边界。
+                    markToolStarted.run();
+
                     // 通过工具注册表执行最终工具调用。
                     executionResult =
                             toolRegistry.execute(
@@ -1791,11 +1899,15 @@ public final class AgentLoop {
      */
     private ToolExecutionResult executeInIteration(
             Context iterationContext,
-            ToolUseBlock toolUse
+            ToolUseBlock toolUse,
+            Runnable markToolStarted
     ) {
         // 1. 在真实执行线程恢复 iteration Context，使工具不继承已结束的 LLM Span。
         try (Scope ignored = iterationContext.makeCurrent()) {
-            return executeTool(toolUse);
+            return executeTool(
+                    toolUse,
+                    markToolStarted
+            );
         }
     }
 

@@ -2,6 +2,7 @@ package dev.learn.agent.manual;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.MessageParam;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -115,9 +116,41 @@ public final class AgentRuntime implements AutoCloseable {
             SessionState sessionState,
             Scanner scanner
     ) throws IOException {
+        return create(
+                sessionState,
+                scanner,
+                SessionStore.disabled(),
+                List.of()
+        );
+    }
+
+    /**
+     * 按当前应用装配顺序创建完整 Runtime，并接入可恢复 Session 历史。
+     *
+     * @param sessionState 当前 CLI Session 的唯一状态
+     * @param scanner ASK 模式共享的终端输入，BYPASS 模式传 null
+     * @param sessionStore 父 AgentSession 的持久化边界
+     * @param initialHistory 恢复后已经封口的主会话历史
+     * @return 已完成依赖装配的 Runtime
+     * @throws IOException 工作区或 Runtime 资源初始化失败
+     */
+    public static AgentRuntime create(
+            SessionState sessionState,
+            Scanner scanner,
+            SessionStore sessionStore,
+            List<MessageParam> initialHistory
+    ) throws IOException {
         Objects.requireNonNull(
                 sessionState,
                 "SessionState 不能为空"
+        );
+        Objects.requireNonNull(
+                sessionStore,
+                "SessionStore 不能为空"
+        );
+        Objects.requireNonNull(
+                initialHistory,
+                "初始历史不能为空"
         );
         Path workspace = sessionState.workspace();
         Path gitRoot = sessionState.gitRoot();
@@ -429,6 +462,7 @@ public final class AgentRuntime implements AutoCloseable {
                         subagentOutputPrinter,
                         subagentBackgroundScheduler,
                         MAX_SUBAGENT_MODEL_ROUNDS,
+                        SessionStore.disabled(),
                         recoveryManager
                 );
 
@@ -475,6 +509,7 @@ public final class AgentRuntime implements AutoCloseable {
                         parentOutputPrinter,
                         parentBackgroundScheduler,
                         MAX_PARENT_MODEL_ROUNDS,
+                        sessionStore,
                         recoveryManager
                 );
         AgentSession agentSession =
@@ -483,7 +518,9 @@ public final class AgentRuntime implements AutoCloseable {
                         memoryRuntime,
                         hookRegistry,
                         parentSystemPromptManager,
-                        sessionState
+                        sessionState,
+                        sessionStore,
+                        initialHistory
                 );
 
         return new AgentRuntime(

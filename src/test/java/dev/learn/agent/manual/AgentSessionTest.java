@@ -485,6 +485,7 @@ class AgentSessionTest {
                             ),
                             backgroundScheduler,
                             3,
+                            SessionStore.disabled(),
                             new ModelRequestRecoveryManager(
                                     List.of()
                             )

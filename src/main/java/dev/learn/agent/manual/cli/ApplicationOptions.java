@@ -8,7 +8,8 @@ import java.util.StringJoiner;
 public record ApplicationOptions(
         Mode mode,
         boolean memoryEnabled,
-        String instruction
+        String instruction,
+        String resumeSessionId
 ) {
 
     /**
@@ -61,16 +62,26 @@ public record ApplicationOptions(
         for (int index = 1;
              index < args.length;
              index++) {
-            memoryEnabled =
-                    parseMemoryArgument(
+            ParsedOption option =
+                    parseOption(
                             args[index]
+                    );
+            if (option.resumeSessionId() != null) {
+                throw new IllegalArgumentException(
+                        "harbor 不支持 --resume"
+                );
+            }
+            memoryEnabled =
+                    option.memoryEnabled(
+                            memoryEnabled
                     );
         }
 
         return new ApplicationOptions(
                 Mode.HARBOR,
                 memoryEnabled,
-                ""
+                "",
+                null
         );
     }
 
@@ -85,19 +96,30 @@ public record ApplicationOptions(
     ) {
         // 1. 交互模式保持 Memory 默认开启。
         boolean memoryEnabled = true;
+        String resumeSessionId = null;
 
         // 2. Interactive 不接受位置参数，只复用原有 Memory 开关。
         for (String argument : args) {
-            memoryEnabled = parseMemoryArgument(
-                    argument
-            );
+            ParsedOption option =
+                    parseOption(
+                            argument
+                    );
+            memoryEnabled =
+                    option.memoryEnabled(
+                            memoryEnabled
+                    );
+            resumeSessionId =
+                    option.resumeSessionId(
+                            resumeSessionId
+                    );
         }
 
         // 3. Interactive 没有单次 instruction，输入仍由 Scanner 提供。
         return new ApplicationOptions(
                 Mode.INTERACTIVE,
                 memoryEnabled,
-                ""
+                "",
+                resumeSessionId
         );
     }
 
@@ -111,14 +133,24 @@ public record ApplicationOptions(
             String[] args
     ) {
         boolean memoryEnabled = true;
+        String resumeSessionId = null;
         int instructionStart = 1;
 
         // 1. 只把 instruction 之前的参数视为选项，instruction 内容保持原样进入 Agent。
         while (instructionStart < args.length
                 && args[instructionStart].startsWith("--")) {
-            memoryEnabled = parseMemoryArgument(
-                    args[instructionStart]
-            );
+            ParsedOption option =
+                    parseOption(
+                            args[instructionStart]
+                    );
+            memoryEnabled =
+                    option.memoryEnabled(
+                            memoryEnabled
+                    );
+            resumeSessionId =
+                    option.resumeSessionId(
+                            resumeSessionId
+                    );
             instructionStart++;
         }
 
@@ -149,30 +181,78 @@ public record ApplicationOptions(
         return new ApplicationOptions(
                 Mode.EXEC,
                 memoryEnabled,
-                instructionText
+                instructionText,
+                resumeSessionId
         );
     }
 
     /**
-     * 解析单个记忆开关。
+     * 解析单个命令行选项。
      *
      * @param argument 当前命令行参数
-     * @return 参数指定的记忆开关
+     * @return 当前选项对应用选项的修改
      */
-    private static boolean parseMemoryArgument(
+    private static ParsedOption parseOption(
             String argument
     ) {
         if ("--memory=on".equals(argument)) {
-            return true;
+            return new ParsedOption(
+                    Boolean.TRUE,
+                    null
+            );
         }
 
         if ("--memory=off".equals(argument)) {
-            return false;
+            return new ParsedOption(
+                    Boolean.FALSE,
+                    null
+            );
+        }
+
+        if (argument.startsWith("--resume=")) {
+            String sessionId =
+                    argument.substring(
+                            "--resume=".length()
+                    );
+            if (sessionId.isBlank()) {
+                throw new IllegalArgumentException(
+                        "--resume 缺少 sessionId"
+                );
+            }
+            return new ParsedOption(
+                    null,
+                    sessionId
+            );
         }
 
         throw new IllegalArgumentException(
                 "未知命令行参数："
                         + argument
         );
+    }
+
+    /**
+     * 表达一个 CLI 选项对当前解析状态的最小修改。
+     */
+    private record ParsedOption(
+            Boolean memoryEnabled,
+            String resumeSessionId
+    ) {
+
+        private boolean memoryEnabled(
+                boolean current
+        ) {
+            return memoryEnabled == null
+                    ? current
+                    : memoryEnabled;
+        }
+
+        private String resumeSessionId(
+                String current
+        ) {
+            return resumeSessionId == null
+                    ? current
+                    : resumeSessionId;
+        }
     }
 }

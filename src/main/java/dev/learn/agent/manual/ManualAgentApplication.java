@@ -1,5 +1,6 @@
 package dev.learn.agent.manual;
 
+import com.anthropic.models.messages.MessageParam;
 import dev.learn.agent.manual.cli.ApplicationOptions;
 import dev.learn.agent.manual.cli.ExecRunner;
 import dev.learn.agent.manual.cli.HarborRunner;
@@ -79,9 +80,12 @@ public final class ManualAgentApplication {
         List<Path> allowedRoots =
                 List.of(cwd);
 
-        // 5. 一次启动只创建一份 Session 状态，父 Agent 和 SubAgent 共享它。
+        // 5. 一次启动只创建一份 Session 状态，恢复模式复用旧 Session ID。
+        String resumeSessionId =
+                options.resumeSessionId();
         SessionState sessionState =
-                new SessionState(
+                resumeSessionId == null
+                        ? new SessionState(
                         options.memoryEnabled(),
                         options.mode() == ApplicationOptions.Mode.INTERACTIVE
                                 ? ToolApprovalMode.ASK
@@ -90,7 +94,52 @@ public final class ManualAgentApplication {
                         cwd,
                         allowedRoots,
                         gitRoot
-                );
+                )
+                        : new SessionState(
+                                resumeSessionId,
+                                options.memoryEnabled(),
+                                options.mode() == ApplicationOptions.Mode.INTERACTIVE
+                                        ? ToolApprovalMode.ASK
+                                        : ToolApprovalMode.BYPASS,
+                                agentHome,
+                                cwd,
+                                allowedRoots,
+                                gitRoot
+                        );
+
+        SessionStore sessionStore;
+        List<MessageParam> initialHistory;
+        boolean previousTurnInterrupted =
+                false;
+        boolean hasUnknownTool =
+                false;
+
+        if (resumeSessionId == null) {
+            sessionStore =
+                    SessionStore.open(
+                            agentHome,
+                            sessionState.sessionId()
+                    );
+            initialHistory =
+                    List.of();
+            sessionStore.saveIdle(
+                    initialHistory
+            );
+        } else {
+            SessionStore.ResumeResult resumeResult =
+                    SessionStore.resume(
+                            agentHome,
+                            sessionState.sessionId()
+                    );
+            sessionStore =
+                    resumeResult.sessionStore();
+            initialHistory =
+                    resumeResult.history();
+            previousTurnInterrupted =
+                    resumeResult.previousTurnInterrupted();
+            hasUnknownTool =
+                    resumeResult.hasUnknownTool();
+        }
 
         // 6. 三种入口只改变输入生命周期，不复制 Agent Core。
         int exitCode =
@@ -98,14 +147,20 @@ public final class ManualAgentApplication {
                     case INTERACTIVE -> {
                         runInteractive(
                                 sessionState,
-                                options
+                                options,
+                                sessionStore,
+                                initialHistory,
+                                previousTurnInterrupted,
+                                hasUnknownTool
                         );
                         yield 0;
                     }
                     case EXEC ->
                             runExec(
                                     sessionState,
-                                    options
+                                    options,
+                                    sessionStore,
+                                    initialHistory
                             );
                     case HARBOR -> {
                         runHarbor(
@@ -130,7 +185,11 @@ public final class ManualAgentApplication {
      */
     private static void runInteractive(
             SessionState sessionState,
-            ApplicationOptions options
+            ApplicationOptions options,
+            SessionStore sessionStore,
+            List<MessageParam> initialHistory,
+            boolean previousTurnInterrupted,
+            boolean hasUnknownTool
     ) throws IOException {
         // 1. Interactive 继续保存完整终端 transcript，保持原有本地会话行为。
         Path transcriptDirectory =
@@ -181,6 +240,21 @@ public final class ManualAgentApplication {
                 "[Terminal transcript] "
                         + transcriptPath
         );
+        System.out.println(
+                "Session "
+                        + sessionState.sessionId()
+                        + " restored."
+        );
+        if (previousTurnInterrupted) {
+            System.out.println(
+                    "Previous turn was interrupted."
+            );
+        }
+        if (hasUnknownTool) {
+            System.out.println(
+                    "One or more tool executions have unknown outcomes."
+            );
+        }
 
         // 2. 同一个 Scanner 同时服务交互输入和现有 ASK 工具审批。
         Scanner scanner =
@@ -188,10 +262,12 @@ public final class ManualAgentApplication {
 
         try {
             try (AgentRuntime runtime =
-                         AgentRuntime.create(
-                                 sessionState,
-                                 scanner
-                         )) {
+                     AgentRuntime.create(
+                             sessionState,
+                             scanner,
+                             sessionStore,
+                             initialHistory
+                     )) {
                 new InteractiveRunner(
                         scanner
                 ).run(
@@ -236,13 +312,17 @@ public final class ManualAgentApplication {
      */
     private static int runExec(
             SessionState sessionState,
-            ApplicationOptions options
+            ApplicationOptions options,
+            SessionStore sessionStore,
+            List<MessageParam> initialHistory
     ) throws IOException {
         // 1. Exec 不创建 Scanner 和终端 transcript，输出直接交给 Harbor 捕获。
         try (AgentRuntime runtime =
                      AgentRuntime.create(
                              sessionState,
-                             null
+                             null,
+                             sessionStore,
+                             initialHistory
                      )) {
             // 2. BYPASS 复用现有权限模式；安全边界由不暴露宿主目录的 Harbor 环境提供。
             return new ExecRunner().run(
