@@ -1,0 +1,1 @@
+- [trace-toolless-preference](trace-toolless-preference.md) — User prefers simple trace confirmation without tool usage.

@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: dev.learn.agent.manual.utils.WorkspacePathResolverTest
+-------------------------------------------------------------------------------
+Tests run: 9, Failures: 0, Errors: 0, Skipped: 2, Time elapsed: 0.106 s -- in dev.learn.agent.manual.utils.WorkspacePathResolverTest
