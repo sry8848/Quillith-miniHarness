@@ -81,31 +81,6 @@ class SessionStateTest {
     }
 
     /**
-     * 验证恢复旧 Session 时可以保留外部传入的 Session ID。
-     */
-    @Test
-    void acceptsExistingSessionId() {
-        String sessionId =
-                "55555555-5555-5555-5555-555555555555";
-
-        SessionState state =
-                new SessionState(
-                        sessionId,
-                        true,
-                        ToolApprovalMode.ASK,
-                        Path.of("agent-home"),
-                        Path.of("workspace"),
-                        List.of(Path.of("workspace")),
-                        null
-                );
-
-        assertEquals(
-                sessionId,
-                state.sessionId()
-        );
-    }
-
-    /**
      * 验证不同 SessionState 拥有不同 Session ID。
      */
     @Test

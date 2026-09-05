@@ -29,10 +29,6 @@ class ApplicationOptionsTest {
         assertTrue(
                 options.memoryEnabled()
         );
-        assertEquals(
-                null,
-                options.resumeSessionId()
-        );
     }
 
     /**
@@ -44,31 +40,6 @@ class ApplicationOptionsTest {
                 ApplicationOptions.parse(
                         new String[]{"--memory=off"}
                 ).memoryEnabled()
-        );
-    }
-
-    /**
-     * 验证 Interactive 可以显式指定要恢复的 Session。
-     */
-    @Test
-    void parsesInteractiveResumeSessionId() {
-        String sessionId =
-                "66666666-6666-6666-6666-666666666666";
-
-        ApplicationOptions options =
-                ApplicationOptions.parse(
-                        new String[]{
-                                "--resume=" + sessionId
-                        }
-                );
-
-        assertEquals(
-                ApplicationOptions.Mode.INTERACTIVE,
-                options.mode()
-        );
-        assertEquals(
-                sessionId,
-                options.resumeSessionId()
         );
     }
 
@@ -97,10 +68,6 @@ class ApplicationOptionsTest {
                 "fix the tests",
                 options.instruction()
         );
-        assertEquals(
-                null,
-                options.resumeSessionId()
-        );
     }
 
     /**
@@ -122,38 +89,6 @@ class ApplicationOptionsTest {
         );
         assertEquals(
                 "inspect project",
-                options.instruction()
-        );
-    }
-
-    /**
-     * 验证 exec 可以恢复旧 Session，并把 instruction 作为新的 Turn。
-     */
-    @Test
-    void execSupportsResumeSessionIdBeforeInstruction() {
-        String sessionId =
-                "77777777-7777-7777-7777-777777777777";
-
-        ApplicationOptions options =
-                ApplicationOptions.parse(
-                        new String[]{
-                                "exec",
-                                "--resume=" + sessionId,
-                                "continue",
-                                "work"
-                        }
-                );
-
-        assertEquals(
-                ApplicationOptions.Mode.EXEC,
-                options.mode()
-        );
-        assertEquals(
-                sessionId,
-                options.resumeSessionId()
-        );
-        assertEquals(
-                "continue work",
                 options.instruction()
         );
     }
@@ -214,10 +149,6 @@ class ApplicationOptionsTest {
                 "",
                 options.instruction()
         );
-        assertEquals(
-                null,
-                options.resumeSessionId()
-        );
     }
 
     /**
@@ -250,23 +181,6 @@ class ApplicationOptionsTest {
                                 new String[]{
                                         "harbor",
                                         "unexpected"
-                                }
-                        )
-        );
-    }
-
-    /**
-     * 验证 Harbor 不接入跨进程 Session 恢复参数。
-     */
-    @Test
-    void harborRejectsResumeArgument() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () ->
-                        ApplicationOptions.parse(
-                                new String[]{
-                                        "harbor",
-                                        "--resume=88888888-8888-8888-8888-888888888888"
                                 }
                         )
         );

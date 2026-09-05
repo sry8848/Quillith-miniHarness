@@ -82,8 +82,7 @@ public final class InteractiveRunner {
                         query
                 );
             } catch (AnthropicServiceException ignored) {
-                // AgentSession 已完成诊断和历史回滚，交互模式继续等待用户下一条输入。
-                continue;
+                throw ignored;
             }
         }
     }

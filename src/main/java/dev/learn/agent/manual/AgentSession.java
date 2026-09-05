@@ -26,7 +26,6 @@ public final class AgentSession {
     private final HookRegistry hookRegistry;
     private final SystemPromptManager systemPromptManager;
     private final SessionState sessionState;
-    private final SessionStore sessionStore;
     private final List<MessageParam> history = new ArrayList<>();
 
     /**
@@ -38,37 +37,6 @@ public final class AgentSession {
             HookRegistry hookRegistry,
             SystemPromptManager systemPromptManager,
             SessionState sessionState
-    ) {
-        this(
-                agentLoop,
-                memoryRuntime,
-                hookRegistry,
-                systemPromptManager,
-                sessionState,
-                SessionStore.disabled(),
-                List.of()
-        );
-    }
-
-    /**
-     * 创建绑定一份父会话历史和可选持久化边界的 AgentSession。
-     *
-     * @param agentLoop 父 Agent 的模型和工具循环
-     * @param memoryRuntime 当前会话的记忆运行时
-     * @param hookRegistry 当前会话的 Hook 注册表
-     * @param systemPromptManager 父 Agent 的 System Prompt 管理器
-     * @param sessionState 当前 Session 状态
-     * @param sessionStore 当前 Session 的恢复持久化边界
-     * @param initialHistory 恢复后已经封口的主会话历史
-     */
-    public AgentSession(
-            AgentLoop agentLoop,
-            MemoryRuntime memoryRuntime,
-            HookRegistry hookRegistry,
-            SystemPromptManager systemPromptManager,
-            SessionState sessionState,
-            SessionStore sessionStore,
-            List<MessageParam> initialHistory
     ) {
         this.agentLoop =
                 Objects.requireNonNull(
@@ -95,17 +63,6 @@ public final class AgentSession {
                         sessionState,
                         "SessionState 不能为空"
                 );
-        this.sessionStore =
-                Objects.requireNonNull(
-                        sessionStore,
-                        "SessionStore 不能为空"
-                );
-        history.addAll(
-                Objects.requireNonNull(
-                        initialHistory,
-                        "初始历史不能为空"
-                )
-        );
     }
 
     /**
@@ -161,9 +118,6 @@ public final class AgentSession {
         history.add(
                 userMessage
         );
-        sessionStore.saveRunning(
-                history
-        );
 
         // 4. Hook 上下文仍作为独立的隐藏用户提醒进入会话历史。
         if (!promptEffect.additionalContexts()
@@ -183,9 +137,6 @@ public final class AgentSession {
                                             + "\n</system-reminder>"
                             )
                             .build()
-            );
-            sessionStore.saveRunning(
-                    history
             );
         }
 
@@ -209,9 +160,6 @@ public final class AgentSession {
             rollbackFailedTurn(
                     history,
                     userMessage
-            );
-            sessionStore.saveIdle(
-                    history
             );
             throw exception;
         }
@@ -237,11 +185,6 @@ public final class AgentSession {
                 );
             }
         }
-
-        // 9. 只有完整 Turn 和记忆收尾都完成后，才把 Session 标记为空闲。
-        sessionStore.saveIdle(
-                history
-        );
     }
 
     /**

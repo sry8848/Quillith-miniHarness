@@ -12,7 +12,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.learn.agent.manual.AgentLoop;
-import dev.learn.agent.manual.SessionStore;
 import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
@@ -450,7 +449,6 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             ),
                             backgroundScheduler,
                             3,
-                            SessionStore.disabled(),
                             new ModelRequestRecoveryManager(
                                     List.of(
                                             new ContentRejectionRecoveryHandler()
