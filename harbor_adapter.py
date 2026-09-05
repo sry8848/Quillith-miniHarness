@@ -1,3 +1,4 @@
+import base64
 import shlex
 from pathlib import Path
 from typing import override
@@ -12,7 +13,7 @@ class QuillithHarborAgent(BaseInstalledAgent):
     """在 Harbor Trial 中运行宿主机预构建的 Quillith JAR。"""
 
     SUPPORTS_ATIF = False
-    SUPPORTS_RESUME = False
+    SUPPORTS_RESUME = True
     MODEL_CONNECTION = ModelConnectionSpec(
         api_key_envs=(
             "QUILLITH_API_KEY",
@@ -26,6 +27,9 @@ class QuillithHarborAgent(BaseInstalledAgent):
     )
 
     _REMOTE_JAR_PATH = "/installed-agent/quillith.jar"
+    _SESSION_DIRECTORY = "/tmp/quillith-harbor-session"
+    _REQUEST_PIPE = f"{_SESSION_DIRECTORY}/request.pipe"
+    _RESPONSE_PIPE = f"{_SESSION_DIRECTORY}/response.pipe"
 
     def __init__(
         self,
@@ -74,6 +78,9 @@ class QuillithHarborAgent(BaseInstalledAgent):
             raise ValueError("QUILLITH_BASH_EXECUTABLE 不能为空")
         self._bash_executable = configured_bash or "/bin/bash"
 
+        # 5. 第一版只区分当前 Trial 是否已经启动 Quillith，不扩展恢复状态机。
+        self._session_started = False
+
     @staticmethod
     @override
     def name() -> str:
@@ -90,6 +97,8 @@ class QuillithHarborAgent(BaseInstalledAgent):
             command=(
                 "command -v java >/dev/null && "
                 "command -v git >/dev/null && "
+                "command -v mkfifo >/dev/null && "
+                "command -v nohup >/dev/null && "
                 f"test -x {quoted_bash}"
             ),
         )
@@ -116,38 +125,100 @@ class QuillithHarborAgent(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        """在当前 Trial 工作目录中执行一次 Quillith Exec。"""
+        """启动或复用当前 Trial 的 Quillith，并提交一条完整 instruction。"""
+        # 1. 第一次普通 run 启动会话；resume 只能复用已经启动的会话。
+        if not self._session_started:
+            if self._resume:
+                raise RuntimeError(
+                    "无法恢复 Quillith Session：当前 Trial 尚未启动会话"
+                )
+            await self._start_session(environment)
+            self._session_started = True
+        elif not self._resume:
+            # 第一版没有主动关闭协议，不能把第二次普通 run 偷偷变成续聊。
+            raise RuntimeError(
+                "Quillith 最小多轮版本不支持同一 Trial 中的第二次非 resume run"
+            )
+
+        # 2. 一条 Harbor step 只发送一条完整 instruction，并等待正常完成信号。
+        await self._submit_turn(
+            environment,
+            instruction,
+        )
+
+    async def _start_session(
+        self,
+        environment: BaseEnvironment,
+    ) -> None:
+        """在当前 Trial 工作目录中后台启动唯一的 Quillith Harbor 进程。"""
         # 1. 只映射 Harbor 显式模型连接；缺失字段留给 Quillith 默认值。
         connection = self.model_connection
-        run_env = {
-            "QUILLITH_INSTRUCTION": instruction,
+        runtime_env = {
             "QUILLITH_BASH_EXECUTABLE": self._bash_executable,
             "GITHUB_PERSONAL_ACCESS_TOKEN": self._github_token,
         }
         if self._quillith_model:
-            run_env["QUILLITH_MODEL"] = self._quillith_model
+            runtime_env["QUILLITH_MODEL"] = self._quillith_model
         if connection.api_key:
-            run_env["QUILLITH_API_KEY"] = connection.api_key
+            runtime_env["QUILLITH_API_KEY"] = connection.api_key
         if connection.configured_base_url:
-            run_env["QUILLITH_BASE_URL"] = connection.configured_base_url
+            runtime_env["QUILLITH_BASE_URL"] = connection.configured_base_url
 
-        # 2. 使用容器当前工作目录，不假定所有任务都固定为 /app。
+        # 2. 只在创建 Session 时确定工作目录，后续 Turn 继续使用同一 cwd。
         workdir_result = await environment.exec("pwd")
         workdir = (workdir_result.stdout or "").strip()
         if workdir_result.return_code != 0 or not workdir:
             raise RuntimeError("无法确定 Harbor Trial 工作目录")
 
-        # 3. instruction 只作为一个双引号包围的 argv 值展开，不进入命令文本。
+        # 3. 创建两个最小单向 FIFO，并让 Java 脱离本次 Docker exec 持续运行。
+        # 下一次写 request FIFO 会自然等待 Java 完成初始化并打开 reader，
+        # 因此正常链路不需要额外 READY 文件或轮询状态。
         await self.exec_as_agent(
             environment,
             command=(
-                "java -jar /installed-agent/quillith.jar "
-                'exec "$QUILLITH_INSTRUCTION" '
-                "> >(tee /logs/agent/quillith.stdout.log) "
-                "2> >(tee /logs/agent/quillith.stderr.log >&2)"
+                "set -e; "
+                f"mkdir {shlex.quote(self._SESSION_DIRECTORY)}; "
+                f"mkfifo {shlex.quote(self._REQUEST_PIPE)}; "
+                f"mkfifo {shlex.quote(self._RESPONSE_PIPE)}; "
+                f"nohup java -jar {shlex.quote(self._REMOTE_JAR_PATH)} harbor "
+                "</dev/null "
+                ">>/logs/agent/quillith.stdout.log "
+                "2>>/logs/agent/quillith.stderr.log &"
             ),
             cwd=workdir,
-            env=run_env,
+            env=runtime_env,
+        )
+
+    async def _submit_turn(
+        self,
+        environment: BaseEnvironment,
+        instruction: str,
+    ) -> None:
+        """向当前 Quillith 进程提交一个 Turn，并等待正常完成信号。"""
+        # 1. Base64 只负责把多行 UTF-8 instruction 放进一行 FIFO 消息。
+        encoded_instruction = base64.b64encode(
+            instruction.encode("utf-8")
+        ).decode("ascii")
+        request = f"TURN {encoded_instruction}"
+
+        # 2. instruction 通过环境变量传入，不拼接到 Shell 命令或输出到日志。
+        # Java 只有在 submit() 返回后才写 OK，所以命令返回就是 verifier 边界。
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "set -e; "
+                "printf '%s\\n' \"$QUILLITH_HARBOR_REQUEST\" "
+                f">{shlex.quote(self._REQUEST_PIPE)}; "
+                "IFS= read -r quillith_status "
+                f"<{shlex.quote(self._RESPONSE_PIPE)}; "
+                'if [ "$quillith_status" != "OK" ]; then '
+                'echo "Quillith Harbor 返回未知状态" >&2; '
+                "exit 1; "
+                "fi"
+            ),
+            env={
+                "QUILLITH_HARBOR_REQUEST": request,
+            },
         )
 
     @override

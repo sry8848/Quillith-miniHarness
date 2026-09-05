@@ -127,4 +127,62 @@ class ApplicationOptionsTest {
                         )
         );
     }
+
+    /**
+     * 验证 harbor 子命令进入机器输入模式并保持 Memory 默认开启。
+     */
+    @Test
+    void parsesHarborMode() {
+        ApplicationOptions options =
+                ApplicationOptions.parse(
+                        new String[]{"harbor"}
+                );
+
+        assertEquals(
+                ApplicationOptions.Mode.HARBOR,
+                options.mode()
+        );
+        assertTrue(
+                options.memoryEnabled()
+        );
+        assertEquals(
+                "",
+                options.instruction()
+        );
+    }
+
+    /**
+     * 验证 Harbor 入口只复用已有 Memory 参数。
+     */
+    @Test
+    void harborSupportsExistingMemoryOption() {
+        ApplicationOptions options =
+                ApplicationOptions.parse(
+                        new String[]{
+                                "harbor",
+                                "--memory=off"
+                        }
+                );
+
+        assertFalse(
+                options.memoryEnabled()
+        );
+    }
+
+    /**
+     * 验证 Harbor instruction 不允许通过位置参数传入。
+     */
+    @Test
+    void harborRejectsInstructionArgument() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        ApplicationOptions.parse(
+                                new String[]{
+                                        "harbor",
+                                        "unexpected"
+                                }
+                        )
+        );
+    }
 }

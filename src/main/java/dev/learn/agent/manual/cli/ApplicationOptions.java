@@ -16,7 +16,8 @@ public record ApplicationOptions(
      */
     public enum Mode {
         INTERACTIVE,
-        EXEC
+        EXEC,
+        HARBOR
     }
 
     /**
@@ -34,8 +35,43 @@ public record ApplicationOptions(
             return parseExec(args);
         }
 
-        // 2. 未指定子命令时保持原有交互模式和记忆参数行为。
+        // 2. harbor 子命令只切换机器输入边界，Agent Core 仍复用现有实现。
+        if (args.length > 0
+                && "harbor".equals(args[0])) {
+            return parseHarbor(args);
+        }
+
+        // 3. 未指定子命令时保持原有交互模式和记忆参数行为。
         return parseInteractive(args);
+    }
+
+    /**
+     * 解析 Harbor 机器输入入口支持的现有记忆参数。
+     *
+     * @param args main 方法收到的完整命令行参数
+     * @return Harbor 输入模式应用选项
+     */
+    private static ApplicationOptions parseHarbor(
+            String[] args
+    ) {
+        // 1. Harbor 与现有入口保持相同的 Memory 默认值。
+        boolean memoryEnabled = true;
+
+        // 2. harbor 之后只接受已有 Memory 开关，instruction 由 FIFO 提供。
+        for (int index = 1;
+             index < args.length;
+             index++) {
+            memoryEnabled =
+                    parseMemoryArgument(
+                            args[index]
+                    );
+        }
+
+        return new ApplicationOptions(
+                Mode.HARBOR,
+                memoryEnabled,
+                ""
+        );
     }
 
     /**

@@ -2,6 +2,7 @@ package dev.learn.agent.manual;
 
 import dev.learn.agent.manual.cli.ApplicationOptions;
 import dev.learn.agent.manual.cli.ExecRunner;
+import dev.learn.agent.manual.cli.HarborRunner;
 import dev.learn.agent.manual.cli.InteractiveRunner;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.GitRepositoryResolver;
@@ -47,7 +48,7 @@ public final class ManualAgentApplication {
                         args
                 );
 
-        // 1. 两种模式共用同一个实际工作目录和 Agent Core。
+        // 1. 三种输入入口共用同一个实际工作目录和 Agent Core。
         Path cwd =
                 Path.of("")
                         .toRealPath();
@@ -91,7 +92,7 @@ public final class ManualAgentApplication {
                         gitRoot
                 );
 
-        // 6. 只有输入生命周期不同：Interactive 持续读取，Exec 只提交一次。
+        // 6. 三种入口只改变输入生命周期，不复制 Agent Core。
         int exitCode =
                 switch (options.mode()) {
                     case INTERACTIVE -> {
@@ -106,9 +107,15 @@ public final class ManualAgentApplication {
                                     agentState,
                                     options
                             );
+                    case HARBOR -> {
+                        runHarbor(
+                                agentState
+                        );
+                        yield 0;
+                    }
                 };
 
-        // 3. 正常路径自然返回，只有 Exec 已确认的 Provider 最终失败需要非零进程状态。
+        // 7. 正常路径自然返回，只有 Exec 已确认的 Provider 最终失败需要非零进程状态。
         if (exitCode != 0) {
             System.exit(exitCode);
         }
@@ -241,6 +248,28 @@ public final class ManualAgentApplication {
             return new ExecRunner().run(
                     runtime.manualAgent(),
                     options.instruction()
+            );
+        }
+    }
+
+    /**
+     * 在 Harbor 隔离环境中保持一份 Interactive Session 并处理多个 Turn。
+     *
+     * @param agentState 当前 Harbor Trial 唯一的 Session 状态
+     * @throws IOException Runtime 初始化、FIFO 通信或 Turn 执行失败
+     */
+    private static void runHarbor(
+            AgentState agentState
+    ) throws IOException {
+        // 1. 一个 Harbor 进程只创建一份 Runtime，所有 Turn 共用它。
+        try (AgentRuntime runtime =
+                     AgentRuntime.create(
+                             agentState,
+                             null
+                     )) {
+            // Harbor 使用 BYPASS，不创建人工审批 Scanner 或终端 transcript。
+            new HarborRunner().run(
+                    runtime.manualAgent()
             );
         }
     }
