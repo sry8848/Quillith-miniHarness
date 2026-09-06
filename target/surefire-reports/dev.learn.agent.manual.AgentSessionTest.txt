@@ -1,0 +1,21 @@
+-------------------------------------------------------------------------------
+Test set: dev.learn.agent.manual.AgentSessionTest
+-------------------------------------------------------------------------------
+Tests run: 8, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 3.604 s <<< FAILURE! -- in dev.learn.agent.manual.AgentSessionTest
+dev.learn.agent.manual.AgentSessionTest.interactiveRunnerContinuesAfterProviderError -- Time elapsed: 0.093 s <<< ERROR!
+com.anthropic.errors.InternalServerException: 500: {"type":"server_error","message":"provider failed"}
+	at com.anthropic.errors.InternalServerException$Builder.build(InternalServerException.kt:89)
+	at com.anthropic.core.handlers.ErrorHandler$errorHandler$1.handle(ErrorHandler.kt:76)
+	at com.anthropic.core.handlers.ErrorHandler$errorHandler$1.handle(ErrorHandler.kt:37)
+	at com.anthropic.services.blocking.MessageServiceImpl$WithRawResponseImpl.createStreaming(MessageServiceImpl.kt:158)
+	at com.anthropic.services.blocking.MessageService$WithRawResponse.createStreaming(MessageService.kt:171)
+	at dev.learn.agent.manual.AgentLoop.streamModel(AgentLoop.java:870)
+	at dev.learn.agent.manual.AgentLoop.runIteration(AgentLoop.java:809)
+	at dev.learn.agent.manual.AgentLoop.run(AgentLoop.java:486)
+	at dev.learn.agent.manual.AgentSession.submit(AgentSession.java:193)
+	at dev.learn.agent.manual.cli.InteractiveRunner.run(InteractiveRunner.java:94)
+	at dev.learn.agent.manual.AgentSessionTest.interactiveRunnerContinuesAfterProviderError(AgentSessionTest.java:315)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+

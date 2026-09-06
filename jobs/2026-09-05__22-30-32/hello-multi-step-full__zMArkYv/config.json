@@ -1,0 +1,16 @@
+{
+    "task": {
+        "path": "D:\\learn_claudecode\\harbor-lab\\hello-multi-step-full"
+    },
+    "trial_name": "hello-multi-step-full__zMArkYv",
+    "trials_dir": "jobs\\2026-09-05__22-30-32",
+    "agent": {
+        "name": "harbor_adapter:QuillithHarborAgent",
+        "model_name": "anthropic/qwen3.5-flash",
+        "resume_trajectory": true,
+        "kwargs": {
+            "jar_path": "D:\\learn_claudecode\\demo\\Quillith-miniHarness\\target\\quillith.jar"
+        }
+    },
+    "job_id": "7e3e027a-32dd-44b3-aaf2-cd1d82ac0365"
+}

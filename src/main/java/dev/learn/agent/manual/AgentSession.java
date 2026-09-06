@@ -3,6 +3,9 @@ package dev.learn.agent.manual;
 import com.anthropic.core.JsonValue;
 import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.models.messages.MessageParam;
+import com.anthropic.models.messages.ContentBlockParam;
+import com.anthropic.models.messages.TextBlockParam;
+import com.anthropic.models.messages.ToolResultBlockParam;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -10,6 +13,9 @@ import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
+import dev.learn.agent.manual.session.ConversationState;
+import dev.learn.agent.manual.session.SessionStore;
+import dev.learn.agent.manual.tool.ToolExecutionResult;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -26,7 +32,9 @@ public final class AgentSession {
     private final HookRegistry hookRegistry;
     private final SystemPromptManager systemPromptManager;
     private final SessionState sessionState;
-    private final List<MessageParam> history = new ArrayList<>();
+    private final SessionStore sessionStore;
+    private final ConversationState conversationState;
+    private boolean persisted;
 
     /**
      * 创建绑定一份父会话历史的 AgentSession。
@@ -37,6 +45,22 @@ public final class AgentSession {
             HookRegistry hookRegistry,
             SystemPromptManager systemPromptManager,
             SessionState sessionState
+    ) {
+        this(agentLoop, memoryRuntime, hookRegistry, systemPromptManager, sessionState,
+                createSessionStore(sessionState), new ConversationState());
+    }
+
+    /**
+     * 创建带有显式 Session 存储和双视图状态的父会话。
+     */
+    public AgentSession(
+            AgentLoop agentLoop,
+            MemoryRuntime memoryRuntime,
+            HookRegistry hookRegistry,
+            SystemPromptManager systemPromptManager,
+            SessionState sessionState,
+            SessionStore sessionStore,
+            ConversationState conversationState
     ) {
         this.agentLoop =
                 Objects.requireNonNull(
@@ -63,6 +87,16 @@ public final class AgentSession {
                         sessionState,
                         "SessionState 不能为空"
                 );
+        this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore 不能为空");
+        this.conversationState = Objects.requireNonNull(conversationState, "conversationState 不能为空");
+    }
+
+    private static SessionStore createSessionStore(SessionState sessionState) {
+        try {
+            return new SessionStore(sessionState.agentHome());
+        } catch (IOException exception) {
+            throw new java.io.UncheckedIOException("创建 SessionStore 失败", exception);
+        }
     }
 
     /**
@@ -115,15 +149,22 @@ public final class AgentSession {
                         )
                         .content(query)
                         .build();
-        history.add(
-                userMessage
-        );
+        if (persisted) {
+            sessionStore.appendCommitted(sessionState.sessionId(), List.of(userMessage));
+        } else {
+            sessionStore.createSessionWithFirstMessage(
+                    sessionState.sessionId(),
+                    sessionState.workspace().toString(),
+                    userMessage
+            );
+            persisted = true;
+        }
+        conversationState.appendCommitted(userMessage);
 
         // 4. Hook 上下文仍作为独立的隐藏用户提醒进入会话历史。
         if (!promptEffect.additionalContexts()
                 .isEmpty()) {
-            history.add(
-                    MessageParam.builder()
+            MessageParam hookMessage = MessageParam.builder()
                             .role(
                                     MessageParam.Role.USER
                             )
@@ -136,20 +177,21 @@ public final class AgentSession {
                                     )
                                             + "\n</system-reminder>"
                             )
-                            .build()
-            );
+                            .build();
+            sessionStore.appendCommitted(sessionState.sessionId(), List.of(hookMessage));
+            conversationState.appendCommitted(hookMessage);
         }
 
         // 5. AgentLoop 可能压缩 history，因此先保存 Memory complete 使用的文本视图。
         List<MessageParam> memoryExtractionSnapshot =
                 memoryRuntime.capture(
-                        history
+                        conversationState.messages()
                 );
 
         // 6. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
         try {
             agentLoop.run(
-                    history,
+                    conversationState,
                     recalledMemories
             );
         } catch (AnthropicServiceException exception) {
@@ -158,9 +200,16 @@ public final class AgentSession {
                     exception
             );
             rollbackFailedTurn(
-                    history,
+                    conversationState.messages(),
                     userMessage
             );
+            rollbackFailedTurn(conversationState.modelContext(), userMessage);
+            sessionStore.restoreAfterFailedTurn(
+                    sessionState.sessionId(),
+                    conversationState.messages(),
+                    conversationState
+            );
+            persisted = !conversationState.messages().isEmpty();
             throw exception;
         }
 
@@ -214,6 +263,112 @@ public final class AgentSession {
                 RefreshScope.SESSION,
                 sessionState
         );
+    }
+
+    /**
+     * 返回已持久化 Session 的展示摘要。
+     *
+     * @return 按最后更新时间倒序的摘要
+     */
+    public List<SessionStore.SessionSummary> listSessions() {
+        return sessionStore.listSessions();
+    }
+
+    /**
+     * 打开指定 Session，并只封口上次中断的稳定内容。
+     *
+     * @param sessionId 要恢复的 Session ID
+     */
+    public void resume(
+            String sessionId
+    ) {
+        SessionStore.LoadedSession loaded = sessionStore.loadSession(
+                sessionId,
+                sessionState.workspace().toString()
+        );
+
+        // 1. Checkpoint 已经压缩 throughSeq 之前的历史，后续消息按原序追加即可。
+        List<MessageParam> modelContext = new ArrayList<>();
+        long throughSeq = -1;
+        if (loaded.checkpoint() == null) {
+            modelContext.addAll(loaded.messages());
+        } else {
+            throughSeq = loaded.checkpoint().throughSeq();
+            modelContext.addAll(loaded.checkpoint().context());
+            for (int index = (int) throughSeq + 1;
+                 index < loaded.messages().size();
+                 index++) {
+                modelContext.add(loaded.messages().get(index));
+            }
+        }
+
+        // 2. 全部读取成功后才替换当前内存 Session，失败不会破坏当前输入状态。
+        conversationState.restore(loaded.messages(), modelContext, throughSeq);
+        sessionState.restoreSessionId(sessionId);
+        persisted = true;
+
+        if (loaded.inflight() == null) {
+            return;
+        }
+
+        // 3. 不重跑工具；每个完整 tool_use 都从已持久化状态构造可配对结果。
+        List<ContentBlockParam> recoveryContent = new ArrayList<>();
+        for (ContentBlockParam block : loaded.inflight().assistantContent()) {
+            if (!block.isToolUse()) {
+                continue;
+            }
+            var toolUse = block.asToolUse();
+            SessionStore.PersistedToolExecution execution = loaded.inflight()
+                    .toolExecutions().get(toolUse.id());
+            if (execution == null) {
+                throw new IllegalStateException("in-flight tool_use 缺少执行状态：" + toolUse.id());
+            }
+            ToolExecutionResult result = switch (execution.state()) {
+                case NOT_STARTED -> ToolExecutionResult.failure("工具在上次中断前尚未执行");
+                case RUNNING -> ToolExecutionResult.failure("工具执行过程中进程中断，最终外部状态未知，重新执行前需要先检查现实状态");
+                case COMPLETED -> execution.result();
+            };
+            recoveryContent.add(toolResultBlock(toolUse.id(), result));
+        }
+        recoveryContent.add(textBlock(STREAM_INTERRUPTION_PROMPT));
+
+        // 4. assistant 内容与恢复 user 消息一次性封口，再删除 in-flight 事实。
+        List<MessageParam> repaired = new ArrayList<>();
+        if (!loaded.inflight().assistantContent().isEmpty()) {
+            repaired.add(toAssistantMessage(loaded.inflight().assistantContent()));
+        }
+        repaired.add(MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .contentOfBlockParams(recoveryContent)
+                .build());
+        sessionStore.commitCompletedTurn(sessionId, repaired);
+        conversationState.appendCommitted(repaired);
+    }
+
+    private static final String STREAM_INTERRUPTION_PROMPT =
+            "The previous assistant stream ended unexpectedly. Only fully completed content blocks were preserved; "
+                    + "the unfinished block was discarded. Continue without repeating completed work.";
+
+    /** 把完整 assistant blocks 封装为协议消息。 */
+    private static MessageParam toAssistantMessage(List<ContentBlockParam> content) {
+        return MessageParam.builder()
+                .role(MessageParam.Role.ASSISTANT)
+                .contentOfBlockParams(content)
+                .build();
+    }
+
+    /** 把内部工具结果转换为 Anthropic tool_result。 */
+    private static ContentBlockParam toolResultBlock(String toolUseId, ToolExecutionResult result) {
+        return ContentBlockParam.ofToolResult(ToolResultBlockParam.builder()
+                .toolUseId(toolUseId)
+                .content(result.content())
+                .isError(result.error())
+                .build());
+    }
+
+    /** 构造恢复说明使用的文本内容块。 */
+    private static ContentBlockParam textBlock(String text) {
+        return ContentBlockParam.ofText(TextBlockParam.builder().text(text).build());
     }
 
     /**

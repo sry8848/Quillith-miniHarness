@@ -47,6 +47,9 @@
         <!-- 使用成熟的双路输出流，同时保留终端显示并保存本次会话文本。 -->
         <commons-io.version>2.22.0</commons-io.version>
 
+        <!-- SQLite 仅用于本地 Session 持久化，不引入 ORM 或连接池。 -->
+        <sqlite-jdbc.version>3.46.1.0</sqlite-jdbc.version>
+
         <!-- 固定 JUnit 5 正式版，验证并发调度契约。 -->
         <junit.version>5.14.3</junit.version>
     </properties>
@@ -123,6 +126,13 @@
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
             <version>${commons-io.version}</version>
+        </dependency>
+
+        <!-- SQLite JDBC 驱动由 SessionStore 直接通过 JDBC 使用。 -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>${sqlite-jdbc.version}</version>
         </dependency>
 
         <!--

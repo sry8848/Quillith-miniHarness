@@ -32,6 +32,9 @@ import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryState;
+import dev.learn.agent.manual.session.ConversationState;
+import dev.learn.agent.manual.session.NoOpTurnJournal;
+import dev.learn.agent.manual.session.TurnJournal;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
@@ -154,6 +157,9 @@ public final class AgentLoop {
     // 保存模型请求级错误的按序恢复分派器。
     private final ModelRequestRecoveryManager recoveryManager;
 
+    // 父 Agent 写 SQLite，子 Agent 使用 NoOp Journal 保持历史隔离。
+    private final TurnJournal turnJournal;
+
     /**
      * 创建模型调用和工具执行循环。
      *
@@ -185,6 +191,29 @@ public final class AgentLoop {
             BackgroundTaskScheduler backgroundScheduler,
             int maxModelRounds,
             ModelRequestRecoveryManager recoveryManager
+    ) {
+        this(client, model, systemPromptManager, sessionState, toolRegistry, approvalGate,
+                hookRegistry, contextManager, outputPrinter, backgroundScheduler,
+                maxModelRounds, recoveryManager, new NoOpTurnJournal());
+    }
+
+    /**
+     * 创建带有 Session 流式持久化边界的模型循环。
+     */
+    public AgentLoop(
+            AnthropicClient client,
+            String model,
+            SystemPromptManager systemPromptManager,
+            SessionState sessionState,
+            ToolRegistry toolRegistry,
+            ToolApprovalGate approvalGate,
+            HookRegistry hookRegistry,
+            ContextManager contextManager,
+            StreamOutputPrinter outputPrinter,
+            BackgroundTaskScheduler backgroundScheduler,
+            int maxModelRounds,
+            ModelRequestRecoveryManager recoveryManager,
+            TurnJournal turnJournal
     ) {
         // 校验并保存模型客户端。
         this.client =
@@ -275,6 +304,8 @@ public final class AgentLoop {
                         recoveryManager,
                         "ModelRequestRecoveryManager 不能为空"
                 );
+
+        this.turnJournal = Objects.requireNonNull(turnJournal, "turnJournal 不能为空");
     }
 
     /**
@@ -289,6 +320,29 @@ public final class AgentLoop {
             List<MessageParam> messages,
             String turnContext
     ) {
+        ConversationState conversationState = new ConversationState();
+        conversationState.restore(messages, messages, -1);
+        String output = run(conversationState, turnContext);
+        messages.clear();
+        messages.addAll(conversationState.modelContext());
+        return output;
+    }
+
+    /**
+     * 持续调用模型，并维护父 Session 的完整历史和活动上下文。
+     *
+     * @param conversationState 当前会话的双视图状态
+     * @param turnContext 只进入本轮模型请求的临时上下文
+     * @return 当前任务最终 assistant 回复中的文本结论
+     */
+    @WithSpan("agent.run")
+    public String run(
+            ConversationState conversationState,
+            String turnContext
+    ) {
+        Objects.requireNonNull(conversationState, "conversationState 不能为空");
+        List<MessageParam> messages = conversationState.modelContext();
+
         // 校验本轮临时上下文已由调用方明确提供。
         // 设计意图：区分“没有召回记忆”和“集成代码遗漏参数”，让契约错误在调用边界暴露。
         Objects.requireNonNull(
@@ -357,7 +411,8 @@ public final class AgentLoop {
                         );
 
                 // 把合并后的上下文作为隐藏提醒追加到会话历史。
-                messages.add(
+                appendCommitted(
+                        conversationState,
                         MessageParam.builder()
                                 .role(
                                         MessageParam.Role.USER
@@ -405,14 +460,14 @@ public final class AgentLoop {
                         );
             }
 
-            // 清空原历史，准备提交完整的请求前上下文治理结果。
-            // 设计意图：ContextManager 返回新列表，所有管线成功后统一替换，避免提交半条管线的结果。
-            messages.clear();
-
-            // 把治理完成的请求消息写回真实会话历史。
-            messages.addAll(
-                    requestMessages
-            );
+            // 只有上下文治理实际改变消息时才新增 Checkpoint，避免无意义快照。
+            if (!requestMessages.equals(messages)) {
+                conversationState.replaceModelContext(
+                        requestMessages,
+                        conversationState.latestSequence()
+                );
+                turnJournal.saveContextCheckpoint(conversationState);
+            }
 
             // 声明当前模型流结果和工具调用状态。
             StreamTurn turn;
@@ -440,6 +495,11 @@ public final class AgentLoop {
                             exception,
                             requestRecoveryState
                     )) {
+                        conversationState.replaceModelContext(
+                                messages,
+                                conversationState.latestSequence()
+                        );
+                        turnJournal.saveContextCheckpoint(conversationState);
                         continue;
                     }
 
@@ -450,7 +510,7 @@ public final class AgentLoop {
                 // SSE Provider Error 携带流中已经完成的内容块和工具执行状态。
                 if (turn.providerError() != null) {
                     if (!recoverFromProviderError(
-                            messages,
+                            conversationState,
                             requestRecoveryState,
                             turn,
                             turn.providerError(),
@@ -492,7 +552,7 @@ public final class AgentLoop {
 
                     // 把流中断前的完整协议内容提交到会话历史。
                     commitInterruptedTurn(
-                            messages,
+                            conversationState,
                             turn
                     );
 
@@ -523,10 +583,9 @@ public final class AgentLoop {
                 // 把没有工具调用的完整 assistant 内容写入会话历史。
                 if (!turn.assistantContent()
                         .isEmpty()) {
-                    messages.add(
-                            toAssistantMessage(
-                                    turn.assistantContent()
-                            )
+                    commitCompletedTurn(
+                            conversationState,
+                            List.of(toAssistantMessage(turn.assistantContent()))
                     );
                 }
 
@@ -564,7 +623,8 @@ public final class AgentLoop {
                 }
 
                 // 把普通文本续写指令追加到会话历史。
-                messages.add(
+                appendCommitted(
+                        conversationState,
                         MessageParam.builder()
                                 .role(
                                         MessageParam.Role.USER
@@ -623,7 +683,8 @@ public final class AgentLoop {
                     }
 
                     // 把 Stop Hook 的继续处理消息追加到会话历史。
-                    messages.add(
+                    appendCommitted(
+                            conversationState,
                             MessageParam.builder()
                                     .role(
                                             MessageParam.Role.USER
@@ -685,7 +746,8 @@ public final class AgentLoop {
                             .build();
 
             // 成对提交 assistant 工具请求和 user 工具结果。
-            messages.addAll(
+            commitCompletedTurn(
+                    conversationState,
                     List.of(
                             toAssistantMessage(
                                     turn.assistantContent()
@@ -964,12 +1026,12 @@ public final class AgentLoop {
                                 String text =
                                         currentContent.toString();
 
-                                // 把完整文本块加入 assistant 协议内容。
-                                assistantContent.add(
-                                        textBlock(
-                                                text
-                                        )
-                                );
+                                // 先保存完整文本块，再暴露给本轮后续协议处理。
+                                ContentBlockParam completedTextBlock = textBlock(text);
+                                List<ContentBlockParam> durableContent = new ArrayList<>(assistantContent);
+                                durableContent.add(completedTextBlock);
+                                turnJournal.recordClosedAssistantContent(durableContent);
+                                assistantContent.add(completedTextBlock);
 
                                 // 把完整文本加入最终返回值候选列表。
                                 completedText.add(
@@ -987,11 +1049,12 @@ public final class AgentLoop {
                                                                 .toString()
                                                 )
                                                 .build();
-                                assistantContent.add(
-                                        ContentBlockParam.ofThinking(
-                                                thinkingBlock
-                                        )
-                                );
+                                ContentBlockParam completedThinkingBlock =
+                                        ContentBlockParam.ofThinking(thinkingBlock);
+                                List<ContentBlockParam> durableContent = new ArrayList<>(assistantContent);
+                                durableContent.add(completedThinkingBlock);
+                                turnJournal.recordClosedAssistantContent(durableContent);
+                                assistantContent.add(completedThinkingBlock);
                             } else {
                                 // 读取 content_block_start 中保存的工具调用元数据。
                                 ToolUseBlock startTool =
@@ -1035,10 +1098,15 @@ public final class AgentLoop {
                                                 )
                                                 .build();
 
-                                // 工具调用必须先展示，再提交执行任务，保证终端调用顺序先于结果顺序。
-                                outputPrinter.printToolCall(
-                                        completedTool
-                                );
+                                ContentBlockParam completedToolBlock =
+                                        ContentBlockParam.ofToolUse(completedTool.toParam());
+                                List<ContentBlockParam> durableContent = new ArrayList<>(assistantContent);
+                                durableContent.add(completedToolBlock);
+
+                                // durable tool_use 和 NOT_STARTED 后才允许调度器启动工具。
+                                turnJournal.recordToolUse(durableContent, completedTool.id());
+                                assistantContent.add(completedToolBlock);
+                                outputPrinter.printToolCall(completedTool);
 
                                 // 对合法输入按执行模式分流，对非法输入直接创建失败结果。
                                 CompletableFuture<ToolExecutionResult> future;
@@ -1056,20 +1124,12 @@ public final class AgentLoop {
                                                     )
                                             );
                                 } else {
-                                    future =
-                                            CompletableFuture.completedFuture(
-                                                    ToolExecutionResult.failure(
-                                                            "Error: tool input must be a valid JSON object."
-                                                    )
-                                            );
+                                    ToolExecutionResult invalidResult = ToolExecutionResult.failure(
+                                            "Error: tool input must be a valid JSON object."
+                                    );
+                                    turnJournal.completeTool(completedTool.id(), invalidResult);
+                                    future = CompletableFuture.completedFuture(invalidResult);
                                 }
-
-                                // 把完整工具调用加入 assistant 协议内容。
-                                assistantContent.add(
-                                        ContentBlockParam.ofToolUse(
-                                                completedTool.toParam()
-                                        )
-                                );
 
                                 // 按模型调用顺序保存工具元数据和异步结果。
                                 toolExecutions.add(
@@ -1258,12 +1318,14 @@ public final class AgentLoop {
      * @return 本次 SSE 错误已构造恢复请求时返回 true
      */
     private boolean recoverFromProviderError(
-            List<MessageParam> messages,
+            ConversationState conversationState,
             ModelRequestRecoveryState recoveryState,
             StreamTurn providerErrorTurn,
             AnthropicServiceException exception,
             int previousRejectionCount
     ) {
+        List<MessageParam> messages = conversationState.modelContext();
+
         // 只有服务端明确返回 DataInspectionFailed 才进入内容拒绝恢复。
         if (!isDataInspectionFailure(
                 exception
@@ -1286,7 +1348,7 @@ public final class AgentLoop {
                             < MAX_SSE_CONTENT_REJECTION_RECOVERIES;
 
             commitProviderErrorToolFacts(
-                    messages,
+                    conversationState,
                     providerErrorTurn,
                     shouldRetry
                             ? outputContentRejectionMessage(
@@ -1330,7 +1392,7 @@ public final class AgentLoop {
      * @param recoveryPrompt 需要交给模型的恢复说明；第三次拒绝时为 null
      */
     private void commitProviderErrorToolFacts(
-            List<MessageParam> messages,
+            ConversationState conversationState,
             StreamTurn providerErrorTurn,
             String recoveryPrompt
     ) {
@@ -1348,15 +1410,16 @@ public final class AgentLoop {
         if (providerErrorTurn.toolExecutions()
                 .isEmpty()) {
             if (recoveryPrompt != null) {
-                messages.add(
-                        MessageParam.builder()
+                commitCompletedTurn(
+                        conversationState,
+                        List.of(MessageParam.builder()
                                 .role(
                                         MessageParam.Role.USER
                                 )
                                 .content(
                                         recoveryPrompt
                                 )
-                                .build()
+                                .build())
                 );
             }
             return;
@@ -1378,13 +1441,11 @@ public final class AgentLoop {
         }
 
         // 先提交完整 assistant 工具调用，再提交对应结果和可选恢复说明。
-        messages.add(
-                toAssistantMessage(
-                        safeAssistantContent
-                )
-        );
-        messages.add(
-                MessageParam.builder()
+        commitCompletedTurn(
+                conversationState,
+                List.of(
+                        toAssistantMessage(safeAssistantContent),
+                        MessageParam.builder()
                         .role(
                                 MessageParam.Role.USER
                         )
@@ -1392,6 +1453,7 @@ public final class AgentLoop {
                                 userContent
                         )
                         .build()
+                )
         );
     }
 
@@ -1694,6 +1756,9 @@ public final class AgentLoop {
 
                 // 审批发生在真实工具执行之前，Gate 不执行工具本身。
                 if (approvalGate.approve(effectiveToolCall)) {
+                    // 真实 ToolRegistry 可能立刻产生外部副作用，必须先 durable RUNNING。
+                    turnJournal.markToolRunning(toolUse.id());
+
                     // 通过工具注册表执行最终工具调用。
                     executionResult =
                             toolRegistry.execute(
@@ -1795,7 +1860,11 @@ public final class AgentLoop {
     ) {
         // 1. 在真实执行线程恢复 iteration Context，使工具不继承已结束的 LLM Span。
         try (Scope ignored = iterationContext.makeCurrent()) {
-            return executeTool(toolUse);
+            ToolExecutionResult result = executeTool(toolUse);
+
+            // 1. 结果先落库，Future 完成后主循环才能组装 tool_result。
+            turnJournal.completeTool(toolUse.id(), result);
+            return result;
         }
     }
 
@@ -1864,7 +1933,7 @@ public final class AgentLoop {
      * @param turn 本次中断流保留下来的稳定内容
      */
     private void commitInterruptedTurn(
-            List<MessageParam> messages,
+            ConversationState conversationState,
             StreamTurn turn
     ) {
         // 初始化流中断后需要提交的 user 内容列表。
@@ -1920,9 +1989,31 @@ public final class AgentLoop {
 
         // 把准备完成的中断恢复消息统一提交到真实会话历史。
         // 设计意图：所有结果准备成功后统一提交，避免留下不完整的协议消息对。
-        messages.addAll(
-                completedTurn
-        );
+        commitCompletedTurn(conversationState, completedTurn);
+    }
+
+    /**
+     * 先 durable 再把普通正式消息加入会话双视图。
+     */
+    private void appendCommitted(
+            ConversationState conversationState,
+            MessageParam message
+    ) {
+        // 1. SQLite 成功后才改变内存，避免显示不存在的已提交消息。
+        turnJournal.appendCommitted(List.of(message));
+        conversationState.appendCommitted(message);
+    }
+
+    /**
+     * 原子封口一批消息并清理对应的 in-flight 事实。
+     */
+    private void commitCompletedTurn(
+            ConversationState conversationState,
+            List<MessageParam> completedTurn
+    ) {
+        // 1. 先把协议对与 in-flight 清理放进同一个数据库 transaction。
+        turnJournal.commitCompletedTurn(completedTurn);
+        conversationState.appendCommitted(completedTurn);
     }
 
     /**

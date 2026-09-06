@@ -68,6 +68,19 @@ public final class InteractiveRunner {
                 break;
             }
 
+            // 3. Session 命令只读取或恢复本地状态，不作为模型输入。
+            if ("/session".equalsIgnoreCase(command)) {
+                printSessions(agentSession);
+                continue;
+            }
+
+            if ("/resume".equalsIgnoreCase(command)
+                    || command.regionMatches(true, 0, "/resume ", 0, "/resume ".length())) {
+                handleResume(command, agentSession);
+                continue;
+            }
+
+            // 4. Memory 命令保持既有本地控制语义。
             if (isMemoryCommand(command)) {
                 handleMemoryCommand(
                         command,
@@ -77,7 +90,7 @@ public final class InteractiveRunner {
             }
 
             try {
-                // 4. 普通输入沿用同一个父 Agent，保留跨 Turn history。
+                // 5. 普通输入沿用同一个父 Agent，保留跨 Turn history。
                 agentSession.submit(
                         query
                 );
@@ -102,6 +115,42 @@ public final class InteractiveRunner {
                 0,
                 "/memory ".length()
         );
+    }
+
+    /**
+     * 打印当前 workspace 可访问的持久化 Session 摘要。
+     */
+    private static void printSessions(AgentSession agentSession) {
+        // 1. 空列表保持明确提示，避免用户误以为当前内存 Session 已经持久化。
+        if (agentSession.listSessions().isEmpty()) {
+            System.out.println("[Session：暂无已持久化会话]");
+            return;
+        }
+
+        // 2. Store 已按更新时间排序，Runner 只负责展示。
+        for (var session : agentSession.listSessions()) {
+            System.out.println(session.sessionId() + " | " + session.updatedAt()
+                    + " | " + session.firstUserMessage());
+        }
+    }
+
+    /**
+     * 解析并执行 `/resume <sessionId>`。
+     */
+    private static void handleResume(String command, AgentSession agentSession) {
+        String[] parts = command.split("\\s+");
+        if (parts.length != 2 || parts[1].isBlank()) {
+            System.out.println("用法：/resume <sessionId>");
+            return;
+        }
+
+        try {
+            // 1. resume 只加载和封口，不触发新的模型 Turn。
+            agentSession.resume(parts[1]);
+            System.out.println("[Session 已恢复：" + parts[1] + "]");
+        } catch (IllegalArgumentException exception) {
+            System.out.println("[Session 恢复失败：" + exception.getMessage() + "]");
+        }
     }
 
     /**

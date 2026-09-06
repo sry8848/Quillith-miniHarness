@@ -1,0 +1,16 @@
+[
+  {
+    "source": "/logs/artifacts",
+    "destination": "artifacts/logs/artifacts",
+    "type": "directory",
+    "status": "empty",
+    "service": null
+  },
+  {
+    "source": "/app/greet.sh",
+    "destination": "artifacts/app/greet.sh",
+    "type": "file",
+    "status": "ok",
+    "service": null
+  }
+]

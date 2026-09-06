@@ -1,0 +1,36 @@
+14:46:54.603 [DEBUG] ManualAgentApplication - ?????? Git ????? Git MCP ???????????? Git ???/app
+Git ???fatal: not a git repository (or any of the parent directories): .git
+14:46:57.627 [INFO] LifecycleInitializer - Server response with Protocol: 2025-11-25, Capabilities: ServerCapabilities[completions=CompletionCapabilities[], experimental=null, logging=null, prompts=PromptCapabilities[listChanged=null], resources=ResourceCapabilities[subscribe=null, listChanged=null], tools=ToolCapabilities[listChanged=null]], Info: Implementation[name=github-mcp-server, title=GitHub MCP Server, version=github-mcp-server/remote-3ec14fdb2e4c747a3b2846e8c8f0d92fe7bd39f0, description=null, icons=[Icon[src=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADK0lEQVRIibWVQWhcVRSGv3Pfy0zGdBIMRWk7iziMTpORptpqiNSNG1dNizaFFlxIoYuCC7NwJdiVlhYprtwpighCF9GtuhCRtuCoaWdqGF7HkE4aWm1CpklmJpl3j4vMS99M2k4G9N+8d8659/8u9553H/zPkscVM5lMf03do6iOKbJXIAGgUBJ0GpHvolKfzOfzCx0BEonRWDRemRD0PaC3zSKXED1fLfdcLJUuV9oC0ukXdluxkyq81Ma4VX9Y4x4p5rOzjwSkUvsSdMkVYE+H5oHmjM9IoTA1FyRM8JJIjMbokm83zUW/Vvi5raXwC8rnjWiPdXRyYGCgOyi7wUs0XpkAXmyEa/XV8qmZmZnqc0P7XrXKW2BuKDovgorqLoWMFb4p3rj2I4w7qcHCMSAOctDt7n0X+GiDT6NbrPsXDw50xftzKg7odvcmtXf4DsJTjXBpzbXPzF6/vmgAauoepblbnGTyQLvu2VQmk4kgxEKpvui6cwSCM1Ada5qheq5YzC5tF5DP59dQzjYlZcOzccgyGK65mC+2ax7IWPfLcGxhKARgV7i4vBy70ymgUMj+A9SDWGB3GOCEB/f0VJ/sFJBKjfQS6srAOwD8HR7su/7BTgE2Umn98u9uAgR+ayqpnOkUIK1zZMPTACjyQzOA11ND+z+E8aate4TMs4PD7wu80ezP940nJJMH+ky0XgKeAHkH1TcRXgNywFeoueJN//5T2CCZGT7kWBlV9CSwvwV6n/XuhOddLRuAYjG7hMjHgEH1tEb0BEgWeB44J8aebF2243Nc0fMPMUfgguddLUOoe/r7dlwWJzqGMCxq6q5Wz/jSVQZ+Nb795N69u4thk/6dT7uInNiyYcoU9ZW3FxYWfAjdpp7n1XzjHAbmUJ3wTXQ8gvOZb+oXV1d3zLf6WEcWW3MoJXX9w57n1YKUCdeL+eysOv4oyrQqn65Tv+1adz4WrxzaskXWNs0V5Jq6/is3c7lb4byhRTdzuVvUV0ZQPgDuA6jqlj+fqhvkllE9q+vLL7eab4Afo1RqpJdI9Rhr3ZeCQwuUTqfjvoket7WuS51cjP+5/gWC8y5uIkrtDQAAAABJRU5ErkJggg==, mimeType=image/png, sizes=null, theme=light], Icon[src=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAB8ElEQVRIibWVu09UQRSHv9k1IgW7AY0RBWKsTGx9ND4qS5F/wEYLDb0xAY0UxkdrZ2NHYWfsaYyVT4iJwZpNjJooLBQEYz6LvZsdxmH3LtFfN3PO+X5zzzwu/GeFbkF1BJgCJoHjwFgRagDLwAvgeQjhR1+u6qA6q67ZW6vqjDpYFn5YfV0CnOqDOtELPqY2dgFvq6Ee6daWd1HyvPqyBPSV+jQav1H3tbkhMpgF7hXDLaAeQthUzwFXgE/AF0BgFDgBPAshLKhV4CcwVNTPhBAexKsfcfuGbqhdT1imA1+j+lV1GKBSxKeAWpRfTca94HuB+BTVgcuxwWRS8zCEsFbWIISwBcwl0x2m+jnZuKNl4RHjQMJYjoPNJFju0vxt8itiNKHTomqSO7wLeA3YE01VYoPvSf7Jfg2AU8n4W2zwPglO78Igrekw1enMDb1fXKCuUivq7Uz99Tiprq6rvwuzhSLpo3pLvZABn1Vv2nrkUjWLPdlWMFcEF9WD6tuo4EnG4HEG3Nad3KcOqEtRe/bb+ic8Uo9l8i/tAF9UB3bq54StJ3dTvaGOqofM3IuiRalW1PH8bnUKx4tVxLqYyTuf5Czl4JV0IoSwApwB7gLr7enMWtpzG7TeodNFbXmpNfWq6YloxYbUa2q9L+i/1h8/EAGdUrF9ZQAAAABJRU5ErkJggg==, mimeType=image/png, sizes=null, theme=dark]], websiteUrl=null] and Instructions The GitHub MCP Server provides tools to interact with GitHub platform.
+
+Tool selection guidance:
+	1. Use 'list_*' tools for broad, simple retrieval and pagination of all items of a type (e.g., all issues, all PRs, all branches) with basic filtering.
+	2. Use 'search_*' tools for targeted queries with specific criteria, keywords, or complex filters (e.g., issues with certain text, PRs by author, code containing functions).
+
+Context management:
+	1. Use pagination whenever possible with batches of 5-10 items.
+	2. Use minimal_output parameter set to true if the full information is not needed to accomplish a task.
+
+Tool usage guidance:
+	1. For 'search_*' tools: Use separate 'sort' and 'order' parameters if available for sorting results - do not include 'sort:' syntax in query strings. Query strings should contain only search criteria (e.g., 'org:google language:python'), not sorting instructions. ## Issues
+
+Check 'list_issue_types' first for organizations to use proper issue types. Use 'search_issues' before creating new issues to avoid duplicates. Always set 'state_reason' when closing issues. ## Pull Requests
+
+PR review workflow: Always use 'pull_request_review_write' with method 'create' to create a pending review, then 'add_comment_to_pending_review' to add comments, and finally 'pull_request_review_write' with method 'submit_pending' to submit the review for complex reviews with line-specific comments.
+
+Before creating a pull request, search for pull request templates in the repository. Template files are called pull_request_template.md or they're located in '.github/PULL_REQUEST_TEMPLATE' directory. Use the template content to structure the PR description and then call create_pull_request tool.
+14:46:59.907 [DEBUG] WorkspaceLoggingHook - UserPromptSubmit??????? /app
+14:47:06.854 [DEBUG] ToolLoggingHook - PreToolUse?write_file({"content":"#!/bin/bash\necho hello\n","path":"/app/greet.sh"})
+14:47:09.509 [DEBUG] ToolLoggingHook - PreToolUse?bash({"command":"chmod +x /app/greet.sh"})
+14:47:11.936 [DEBUG] ToolLoggingHook - PreToolUse?bash({"command":"/app/greet.sh && echo \"Exit code: $?\""})
+14:47:11.949 [DEBUG] AgentLoop - BeforeModelCall???? 1 ????
+14:47:16.499 [INFO] SessionSummaryHook - Stop???????? 3 ?????
+14:47:29.806 [DEBUG] WorkspaceLoggingHook - UserPromptSubmit??????? /app
+14:47:34.029 [DEBUG] ToolLoggingHook - PreToolUse?edit_file({"new_text":"#!/bin/bash\nname=$(cat /app/config.txt)\necho \"Hello, $name!\"\n","old_text":"#!/bin/bash\necho hello\n",...)
+14:47:36.322 [DEBUG] ToolLoggingHook - PreToolUse?bash({"command":"/app/greet.sh && echo \"Exit code: $?\""})
+14:47:36.388 [DEBUG] AgentLoop - BeforeModelCall???? 1 ????
+14:47:39.878 [INFO] SessionSummaryHook - Stop???????? 5 ?????
+14:48:21.714 [DEBUG] WorkspaceLoggingHook - UserPromptSubmit??????? /app
+14:48:28.511 [DEBUG] ToolLoggingHook - PreToolUse?write_file({"content":"# greet.sh\n\nA simple bash script that prints a personalized greeting based on a name stored in `config.txt...)
+14:48:32.039 [DEBUG] ToolLoggingHook - PreToolUse?bash({"command":"/app/greet.sh && echo \"Exit code: $?\""})
+14:48:32.060 [DEBUG] AgentLoop - BeforeModelCall???? 1 ????
+14:48:36.393 [INFO] SessionSummaryHook - Stop???????? 7 ?????

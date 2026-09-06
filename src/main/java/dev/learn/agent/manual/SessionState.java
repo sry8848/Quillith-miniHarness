@@ -16,7 +16,7 @@ import java.util.UUID;
 public final class SessionState {
 
     /* Session ID 是会话身份的唯一事实来源，创建后不再变化。 */
-    private final String sessionId;
+    private String sessionId;
 
     /* 后台任务可能与交互线程并行读取，状态修改需要立即可见。 */
     private volatile boolean memoryEnabled;
@@ -79,6 +79,17 @@ public final class SessionState {
      */
     public String sessionId() {
         return sessionId;
+    }
+
+    /**
+     * 在 workspace 校验通过后切换到已持久化 Session 的 ID。
+     *
+     * @param sessionId 要恢复的稳定 Session ID
+     */
+    void restoreSessionId(
+            String sessionId
+    ) {
+        this.sessionId = Objects.requireNonNull(sessionId, "sessionId 不能为空");
     }
 
     /**

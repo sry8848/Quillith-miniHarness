@@ -19,6 +19,10 @@ import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ContentRejectionRecoveryHandler;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
+import dev.learn.agent.manual.session.ConversationState;
+import dev.learn.agent.manual.session.NoOpTurnJournal;
+import dev.learn.agent.manual.session.SessionStore;
+import dev.learn.agent.manual.session.SessionTurnJournal;
 import dev.learn.agent.manual.skill.SkillRegistry;
 import dev.learn.agent.manual.systemprompt.IdentitySystemPromptProvider;
 import dev.learn.agent.manual.systemprompt.MemorySystemPromptProvider;
@@ -82,6 +86,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final GitMcpClient gitMcpClient;
     private final GitHubMcpClient githubMcpClient;
     private final AnthropicClient client;
+    private final SessionStore sessionStore;
 
     private AgentRuntime(
             AgentSession agentSession,
@@ -91,7 +96,8 @@ public final class AgentRuntime implements AutoCloseable {
             BashTool subagentBashTool,
             GitMcpClient gitMcpClient,
             GitHubMcpClient githubMcpClient,
-            AnthropicClient client
+            AnthropicClient client,
+            SessionStore sessionStore
     ) {
         this.agentSession = agentSession;
         this.parentBackgroundScheduler = parentBackgroundScheduler;
@@ -101,6 +107,7 @@ public final class AgentRuntime implements AutoCloseable {
         this.gitMcpClient = gitMcpClient;
         this.githubMcpClient = githubMcpClient;
         this.client = client;
+        this.sessionStore = sessionStore;
     }
 
     /**
@@ -121,6 +128,7 @@ public final class AgentRuntime implements AutoCloseable {
         );
         Path workspace = sessionState.workspace();
         Path gitRoot = sessionState.gitRoot();
+        SessionStore sessionStore = new SessionStore(sessionState.agentHome());
 
         // 1. Harbor 显式模型配置优先，未提供时保持当前 Quillith 默认模型。
         String configuredModel =
@@ -429,7 +437,8 @@ public final class AgentRuntime implements AutoCloseable {
                         subagentOutputPrinter,
                         subagentBackgroundScheduler,
                         MAX_SUBAGENT_MODEL_ROUNDS,
-                        recoveryManager
+                        recoveryManager,
+                        new NoOpTurnJournal()
                 );
 
         toolRegistry.register(
@@ -475,7 +484,8 @@ public final class AgentRuntime implements AutoCloseable {
                         parentOutputPrinter,
                         parentBackgroundScheduler,
                         MAX_PARENT_MODEL_ROUNDS,
-                        recoveryManager
+                        recoveryManager,
+                        new SessionTurnJournal(sessionStore, sessionState)
                 );
         AgentSession agentSession =
                 new AgentSession(
@@ -483,7 +493,9 @@ public final class AgentRuntime implements AutoCloseable {
                         memoryRuntime,
                         hookRegistry,
                         parentSystemPromptManager,
-                        sessionState
+                        sessionState,
+                        sessionStore,
+                        new ConversationState()
                 );
 
         return new AgentRuntime(
@@ -494,7 +506,8 @@ public final class AgentRuntime implements AutoCloseable {
                 subagentBashTool,
                 gitMcpClient,
                 githubMcpClient,
-                client
+                client,
+                sessionStore
         );
     }
 
@@ -521,6 +534,7 @@ public final class AgentRuntime implements AutoCloseable {
             gitMcpClient.close();
         }
         client.close();
+        sessionStore.close();
     }
 
     /**
