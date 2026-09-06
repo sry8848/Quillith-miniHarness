@@ -49,6 +49,7 @@ dev\learn\agent\manual\recovery\ContentRejectionRecoveryHandler.class
 dev\learn\agent\manual\session\SessionStore$1.class
 dev\learn\agent\manual\tool\tools\BashTool.class
 dev\learn\agent\manual\hook\hooks\LargeOutputHook.class
+dev\learn\agent\manual\session\SessionPersistenceException.class
 dev\learn\agent\manual\context\ContextManager$PersistencePlan.class
 dev\learn\agent\manual\memory\MemoryType.class
 dev\learn\agent\manual\AgentLoop$ContentRejectionDirection.class

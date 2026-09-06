@@ -41,6 +41,7 @@ D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manu
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\recovery\ModelRequestRecoveryState.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\session\ConversationState.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\session\NoOpTurnJournal.java
+D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\session\SessionPersistenceException.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\session\SessionStore.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\session\SessionTurnJournal.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\session\ToolExecutionState.java

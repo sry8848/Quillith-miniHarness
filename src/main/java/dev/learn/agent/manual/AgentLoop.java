@@ -34,6 +34,7 @@ import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryState;
 import dev.learn.agent.manual.session.ConversationState;
 import dev.learn.agent.manual.session.NoOpTurnJournal;
+import dev.learn.agent.manual.session.SessionPersistenceException;
 import dev.learn.agent.manual.session.TurnJournal;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPrompt;
@@ -1817,6 +1818,10 @@ public final class AgentLoop {
                     output,
                     executionResult.error()
             );
+        } catch (SessionPersistenceException exception) {
+            // Session durable 失败意味着无法证明工具执行状态，必须中止执行链。
+            // 不能把它伪装为模型可见的普通工具失败后继续工作。
+            throw exception;
         } catch (RuntimeException exception) {
             // 记录 Hook、审批或工具管线抛出的未处理异常。
             // 设计意图：Future 边界统一兜住执行管线，完整异常进入日志，模型只接收可配对的精简错误。

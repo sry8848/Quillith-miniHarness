@@ -9,7 +9,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -554,7 +553,10 @@ public final class SessionStore implements AutoCloseable {
                 throw exception;
             }
         } catch (SQLException exception) {
-            throw new UncheckedIOException("Session SQLite 操作失败", new IOException(exception));
+            throw new SessionPersistenceException(
+                    "Session SQLite 操作失败",
+                    new IOException(exception)
+            );
         }
     }
 

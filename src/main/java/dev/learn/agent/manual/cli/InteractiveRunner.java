@@ -40,7 +40,7 @@ public final class InteractiveRunner {
 
         // 1. Interactive 独有的 banner 和输入说明保持原样。
         System.out.println(
-                "s11 Background Task Scheduler Agent"
+                "Quillith"
         );
         System.out.println(
                 "输入任务并回车，输入 q 或 exit 退出。"
@@ -50,7 +50,7 @@ public final class InteractiveRunner {
         // 2. 同一个 Scanner 持续读取输入，直到用户命令或 EOF 结束会话。
         while (true) {
             System.out.println();
-            System.out.print("s11 >> ");
+            System.out.print("Quillith >> ");
 
             if (!scanner.hasNextLine()) {
                 break;
