@@ -112,6 +112,14 @@ class AgentSessionTest {
                     ),
                     secondRequest
             );
+
+            // 1. 两次 submit 各自持久化为一个连续 Turn，不复用上一轮的序号。
+            assertEquals(
+                    2,
+                    fixture.sessionStore().nextTurnSequence(
+                            fixture.agentSession().sessionId()
+                    )
+            );
         }
     }
 
@@ -202,6 +210,12 @@ class AgentSessionTest {
                             "retry request"
                     ),
                     retryRequest
+            );
+
+            // 1. 恢复后的新 submit 必须从中断 Turn 的下一序号继续。
+            assertEquals(
+                    2,
+                    resumedFixture.sessionStore().nextTurnSequence(sessionId)
             );
         }
     }

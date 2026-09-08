@@ -44,12 +44,12 @@ public final class SessionTurnJournal implements TurnJournal {
 
     @Override
     public void appendCommitted(List<MessageParam> messages) {
-        store.appendCommitted(sessionState.sessionId(), messages);
+        store.appendCommitted(sessionState.sessionId(), sessionState.turnSeq(), messages);
     }
 
     @Override
     public void commitCompletedTurn(List<MessageParam> messages) {
-        store.commitCompletedTurn(sessionState.sessionId(), messages);
+        store.commitCompletedTurn(sessionState.sessionId(), sessionState.turnSeq(), messages);
     }
 
     @Override

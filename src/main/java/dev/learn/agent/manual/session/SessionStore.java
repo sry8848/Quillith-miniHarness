@@ -61,6 +61,7 @@ public final class SessionStore implements AutoCloseable {
     public synchronized void createSessionWithFirstMessage(
             String sessionId,
             String workspace,
+            long turnSeq,
             MessageParam userMessage
     ) {
         inTransaction(connection -> {
@@ -74,7 +75,7 @@ public final class SessionStore implements AutoCloseable {
                 statement.setString(4, now);
                 statement.executeUpdate();
             }
-            insertMessages(connection, sessionId, 0, List.of(userMessage));
+            insertMessages(connection, sessionId, 0, turnSeq, List.of(userMessage));
             return null;
         });
     }
@@ -84,6 +85,7 @@ public final class SessionStore implements AutoCloseable {
      */
     public synchronized void appendCommitted(
             String sessionId,
+            long turnSeq,
             List<MessageParam> messages
     ) {
         if (messages.isEmpty()) {
@@ -92,7 +94,7 @@ public final class SessionStore implements AutoCloseable {
 
         inTransaction(connection -> {
             // 1. seq 只在完整 history 内递增，Checkpoint 不维护副本序号。
-            insertMessages(connection, sessionId, nextSequence(connection, sessionId), messages);
+            insertMessages(connection, sessionId, nextSequence(connection, sessionId), turnSeq, messages);
             touch(connection, sessionId);
             return null;
         });
@@ -214,11 +216,12 @@ public final class SessionStore implements AutoCloseable {
      */
     public synchronized void commitCompletedTurn(
             String sessionId,
+            long turnSeq,
             List<MessageParam> committedMessages
     ) {
         inTransaction(connection -> {
             // 1. assistant/tool_result 先作为完整协议对追加，随后再清理恢复事实。
-            insertMessages(connection, sessionId, nextSequence(connection, sessionId), committedMessages);
+            insertMessages(connection, sessionId, nextSequence(connection, sessionId), turnSeq, committedMessages);
             try (PreparedStatement deleteTools = connection.prepareStatement(
                     "DELETE FROM tool_executions WHERE session_id = ?");
                  PreparedStatement deleteInflight = connection.prepareStatement(
@@ -250,6 +253,7 @@ public final class SessionStore implements AutoCloseable {
             // 2. 完整历史、Checkpoint 和 in-flight 共同构成可恢复状态。
             return new LoadedSession(
                     readMessages(connection, sessionId),
+                    readLatestTurnSeq(connection, sessionId),
                     readCheckpoint(connection, sessionId),
                     readInflight(connection, sessionId)
             );
@@ -286,7 +290,7 @@ public final class SessionStore implements AutoCloseable {
     private void initializeSchema(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement()) {
             statement.execute("CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
-            statement.execute("CREATE TABLE IF NOT EXISTS messages (session_id TEXT NOT NULL, seq INTEGER NOT NULL, message_json TEXT NOT NULL, PRIMARY KEY (session_id, seq), FOREIGN KEY (session_id) REFERENCES sessions(session_id))");
+            statement.execute("CREATE TABLE IF NOT EXISTS messages (session_id TEXT NOT NULL, seq INTEGER NOT NULL, turn_seq INTEGER NOT NULL, message_json TEXT NOT NULL, PRIMARY KEY (session_id, seq), FOREIGN KEY (session_id) REFERENCES sessions(session_id))");
             statement.execute("CREATE TABLE IF NOT EXISTS context_checkpoints (session_id TEXT PRIMARY KEY, through_seq INTEGER NOT NULL, context_json TEXT NOT NULL, FOREIGN KEY (session_id) REFERENCES sessions(session_id))");
             statement.execute("CREATE TABLE IF NOT EXISTS inflight_response (session_id TEXT PRIMARY KEY, assistant_content_json TEXT NOT NULL, FOREIGN KEY (session_id) REFERENCES sessions(session_id))");
             statement.execute("CREATE TABLE IF NOT EXISTS tool_executions (session_id TEXT NOT NULL, tool_use_id TEXT NOT NULL, state TEXT NOT NULL, result_json TEXT, PRIMARY KEY (session_id, tool_use_id), FOREIGN KEY (session_id) REFERENCES inflight_response(session_id))");
@@ -311,13 +315,14 @@ public final class SessionStore implements AutoCloseable {
         }
     }
 
-    private void insertMessages(Connection connection, String sessionId, long firstSeq, List<MessageParam> messages) throws SQLException {
+    private void insertMessages(Connection connection, String sessionId, long firstSeq, long turnSeq, List<MessageParam> messages) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "INSERT INTO messages(session_id, seq, message_json) VALUES (?, ?, ?)")) {
+                "INSERT INTO messages(session_id, seq, turn_seq, message_json) VALUES (?, ?, ?, ?)")) {
             for (int index = 0; index < messages.size(); index++) {
                 statement.setString(1, sessionId);
                 statement.setLong(2, firstSeq + index);
-                statement.setString(3, writeJson(messages.get(index)));
+                statement.setLong(3, turnSeq);
+                statement.setString(4, writeJson(messages.get(index)));
                 statement.addBatch();
             }
             statement.executeBatch();
@@ -327,6 +332,30 @@ public final class SessionStore implements AutoCloseable {
     private long nextSequence(Connection connection, String sessionId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT COALESCE(MAX(seq) + 1, 0) FROM messages WHERE session_id = ?")) {
+            statement.setString(1, sessionId);
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getLong(1);
+            }
+        }
+    }
+
+    /**
+     * 返回下一次 submit 应使用的 Turn 序号。
+     *
+     * @param sessionId 已持久化 Session 的稳定 ID
+     * @return 当前最大 Turn 序号加一；没有消息时为 0
+     */
+    public synchronized long nextTurnSequence(
+            String sessionId
+    ) {
+        return inTransaction(connection -> nextTurnSequence(connection, sessionId));
+    }
+
+    private long nextTurnSequence(Connection connection, String sessionId) throws SQLException {
+        // 1. 只以同一 Session 的已提交消息计算下一 Turn，避免跨 Session 共享序号。
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT COALESCE(MAX(turn_seq) + 1, 0) FROM messages WHERE session_id = ?")) {
             statement.setString(1, sessionId);
             try (ResultSet rows = statement.executeQuery()) {
                 rows.next();
@@ -369,6 +398,28 @@ public final class SessionStore implements AutoCloseable {
             }
         }
         return List.copyOf(messages);
+    }
+
+    /**
+     * 读取 Session 最后一条已提交消息所属的 Turn 序号。
+     *
+     * @param connection 当前读取事务的数据库连接
+     * @param sessionId 已持久化 Session 的稳定 ID
+     * @return 最后一条已提交消息的 Turn 序号
+     * @throws SQLException SQL 查询失败
+     */
+    private long readLatestTurnSeq(Connection connection, String sessionId) throws SQLException {
+        // 1. 按全会话 seq 倒序读取，保证恢复封口沿用被中断 submit 的 Turn。
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT turn_seq FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1")) {
+            statement.setString(1, sessionId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Session 缺少已提交消息：" + sessionId);
+                }
+                return rows.getLong(1);
+            }
+        }
     }
 
     private ContextCheckpoint readCheckpoint(Connection connection, String sessionId) throws SQLException {
@@ -519,6 +570,7 @@ public final class SessionStore implements AutoCloseable {
 
     /** 打开 Session 后交给 AgentSession 的全部持久化事实。 */
     public record LoadedSession(List<MessageParam> messages,
+                                long latestTurnSeq,
                                 ContextCheckpoint checkpoint,
                                 InflightResponse inflight) {
     }

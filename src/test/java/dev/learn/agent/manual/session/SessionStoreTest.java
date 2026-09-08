@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /** 验证 SQLite Session 的完整历史和 Context Checkpoint 基本契约。 */
@@ -26,9 +27,9 @@ class SessionStoreTest {
         assertEquals(List.of(), store.listSessions());
 
         // 2. 首条消息创建 Session，后续消息只追加完整 history。
-        store.createSessionWithFirstMessage("session-1", "workspace", first);
+        store.createSessionWithFirstMessage("session-1", "workspace", 0, first);
         store.saveContextCheckpoint("session-1", 0, List.of(first));
-        store.appendCommitted("session-1", List.of(second));
+        store.appendCommitted("session-1", 1, List.of(second));
 
         // 3. 重开后仍能以 Checkpoint 加后续消息恢复活动上下文。
         SessionStore.LoadedSession loaded = store.loadSession("session-1", "workspace");
@@ -36,7 +37,31 @@ class SessionStoreTest {
         assertEquals(0, loaded.checkpoint().throughSeq());
         assertEquals(List.of(first), loaded.checkpoint().context());
         assertNull(loaded.inflight());
+        assertEquals(1, loaded.latestTurnSeq());
+        assertEquals(2, store.nextTurnSequence("session-1"));
         assertEquals("first request", store.listSessions().getFirst().firstUserMessage());
+    }
+
+    /**
+     * 验证恢复封口直接复用最后一条 committed message 的 Turn 序号。
+     */
+    @Test
+    void commitsRecoveredMessagesWithLatestTurnSequence() throws Exception {
+        SessionStore store = new SessionStore(agentHome);
+        MessageParam first = user("interrupted request");
+        MessageParam repaired = user("stream interrupted");
+
+        // 1. 先保存当前 Turn 的用户输入和空 in-flight，模拟尚未封口的模型流。
+        store.createSessionWithFirstMessage("session-1", "workspace", 0, first);
+        store.recordClosedAssistantContent("session-1", List.of());
+        SessionStore.LoadedSession loaded = store.loadSession("session-1", "workspace");
+        assertNotNull(loaded.inflight());
+
+        // 2. 恢复消息使用加载时读取的最后 Turn 序号，而不是创建新的 Turn。
+        store.commitCompletedTurn("session-1", loaded.latestTurnSeq(), List.of(repaired));
+
+        assertEquals(0, store.loadSession("session-1", "workspace").latestTurnSeq());
+        assertEquals(1, store.nextTurnSequence("session-1"));
     }
 
     /** 构造普通用户消息。 */

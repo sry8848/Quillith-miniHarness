@@ -10,13 +10,16 @@ import java.util.UUID;
 /**
  * 保存一个 CLI Session 的唯一语义状态、策略状态和路径上下文。
  *
- * <p>只有记忆开关和审批模式允许在运行期间改变；路径上下文在 Session
- * 创建时确定。父 Agent、SubAgent 以及它们的组件都应读取同一个实例。</p>
+ * <p>当前 Turn 序号、记忆开关和审批模式允许在运行期间改变；路径上下文在
+ * Session 创建时确定。父 Agent、SubAgent 以及它们的组件都应读取同一个实例。</p>
  */
 public final class SessionState {
 
     /* Session ID 是会话身份的唯一事实来源，只在显式新建或恢复 Session 时切换。 */
     private String sessionId;
+
+    /* 当前正在执行的 submit 所属 Turn 序号。 */
+    private long turnSeq;
 
     /* 后台任务可能与交互线程并行读取，状态修改需要立即可见。 */
     private volatile boolean memoryEnabled;
@@ -79,6 +82,26 @@ public final class SessionState {
      */
     public String sessionId() {
         return sessionId;
+    }
+
+    /**
+     * 记录当前 submit 的 Turn 序号。
+     *
+     * @param turnSeq 当前 Session 内递增的 Turn 序号
+     */
+    void beginTurn(
+            long turnSeq
+    ) {
+        this.turnSeq = turnSeq;
+    }
+
+    /**
+     * 返回当前正在执行的 submit 所属 Turn 序号。
+     *
+     * @return 当前 Turn 序号
+     */
+    public long turnSeq() {
+        return turnSeq;
     }
 
     /**

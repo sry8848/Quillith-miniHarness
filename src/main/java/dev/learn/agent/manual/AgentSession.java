@@ -158,12 +158,18 @@ public final class AgentSession {
                 "query 不能为 null"
         );
 
-        // 1. 将完整 Turn 关联到标准 GenAI Agent 操作和稳定 Session。
+        // 1. 每次 submit 使用一个新的递增 Turn 序号；未持久化 Session 的首个 Turn 固定为 0。
+        long turnSeq = persisted
+                ? sessionStore.nextTurnSequence(sessionState.sessionId())
+                : 0;
+        sessionState.beginTurn(turnSeq);
+
+        // 2. 将完整 Turn 关联到标准 GenAI Agent 操作和稳定 Session。
         GenAiSpanAttributes.recordAgentInvocation(
                 sessionState.sessionId()
         );
 
-        // 2. UserPromptSubmit Hook 可以阻止当前输入，或为本轮提供额外上下文。
+        // 3. UserPromptSubmit Hook 可以阻止当前输入，或为本轮提供额外上下文。
         HookEffect promptEffect =
                 hookRegistry
                         .triggerUserPromptSubmit(
@@ -179,7 +185,7 @@ public final class AgentSession {
             return "";
         }
 
-        // 3. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
+        // 4. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
                 sessionState
@@ -190,7 +196,7 @@ public final class AgentSession {
                         query
                 );
 
-        // 4. 首条通过 Hook 的用户消息在请求 Provider 前创建 Session。
+        // 5. 首条通过 Hook 的用户消息在请求 Provider 前创建 Session。
         // 用户输入一旦被接受就是已发生事实，Provider 失败不能撤销它。
         MessageParam userMessage =
                 MessageParam.builder()
@@ -200,18 +206,19 @@ public final class AgentSession {
                         .content(query)
                         .build();
         if (persisted) {
-            sessionStore.appendCommitted(sessionState.sessionId(), List.of(userMessage));
+            sessionStore.appendCommitted(sessionState.sessionId(), turnSeq, List.of(userMessage));
         } else {
             sessionStore.createSessionWithFirstMessage(
                     sessionState.sessionId(),
                     sessionState.workspace().toString(),
+                    turnSeq,
                     userMessage
             );
             persisted = true;
         }
         conversationState.appendCommitted(userMessage);
 
-        // 5. Hook 上下文仍作为独立的隐藏用户提醒进入会话历史。
+        // 6. Hook 上下文仍作为独立的隐藏用户提醒进入会话历史。
         if (!promptEffect.additionalContexts()
                 .isEmpty()) {
             MessageParam hookMessage = MessageParam.builder()
@@ -228,17 +235,17 @@ public final class AgentSession {
                                             + "\n</system-reminder>"
                             )
                             .build();
-            sessionStore.appendCommitted(sessionState.sessionId(), List.of(hookMessage));
+            sessionStore.appendCommitted(sessionState.sessionId(), turnSeq, List.of(hookMessage));
             conversationState.appendCommitted(hookMessage);
         }
 
-        // 6. AgentLoop 可能压缩 history，因此先保存 Memory complete 使用的文本视图。
+        // 7. AgentLoop 可能压缩 history，因此先保存 Memory complete 使用的文本视图。
         List<MessageParam> memoryExtractionSnapshot =
                 memoryRuntime.capture(
                         conversationState.messages()
                 );
 
-        // 7. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
+        // 8. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
         String output;
         try {
             output = recordedAssistant == null
@@ -252,14 +259,14 @@ public final class AgentSession {
                     recordedAssistant
             );
         } catch (AnthropicServiceException exception) {
-            // 8. Provider 失败只终止本次执行，已经 durable 的 Session 事实保持不变。
+            // 9. Provider 失败只终止本次执行，已经 durable 的 Session 事实保持不变。
             printProviderError(
                     exception
             );
             throw exception;
         }
 
-        // 9. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
+        // 10. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
         MemoryTurnResult memoryTurnResult =
                 memoryRuntime.completeTurn(
                         memoryExtractionSnapshot
@@ -415,7 +422,7 @@ public final class AgentSession {
                 .role(MessageParam.Role.USER)
                 .contentOfBlockParams(recoveryContent)
                 .build());
-        sessionStore.commitCompletedTurn(sessionId, repaired);
+        sessionStore.commitCompletedTurn(sessionId, loaded.latestTurnSeq(), repaired);
         conversationState.appendCommitted(repaired);
     }
 
