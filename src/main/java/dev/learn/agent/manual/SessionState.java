@@ -15,7 +15,7 @@ import java.util.UUID;
  */
 public final class SessionState {
 
-    /* Session ID 是会话身份的唯一事实来源，创建后不再变化。 */
+    /* Session ID 是会话身份的唯一事实来源，只在显式新建或恢复 Session 时切换。 */
     private String sessionId;
 
     /* 后台任务可能与交互线程并行读取，状态修改需要立即可见。 */
@@ -90,6 +90,17 @@ public final class SessionState {
             String sessionId
     ) {
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId 不能为空");
+    }
+
+    /**
+     * 为一个新的空白 Session 生成稳定 ID。
+     *
+     * @return 新 Session ID
+     */
+    String startNewSession() {
+        // 1. 新 Session 使用与应用启动时相同的 UUID 生成规则。
+        sessionId = UUID.randomUUID().toString();
+        return sessionId;
     }
 
     /**

@@ -7,6 +7,8 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.StopReason;
 import com.anthropic.models.messages.StructuredContentBlock;
 import com.anthropic.models.messages.StructuredMessage;
+import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 
 // 引入提取结果集合和参数检查类型。
 import java.util.ArrayList;
@@ -118,6 +120,7 @@ public final class MemoryExtractor {
      * @return 全部通过协议和领域校验的记忆候选
      * @throws IllegalStateException 模型结果为空、被截断或不符合提取协议
      */
+    @WithSpan("memory.extract")
     public List<MemoryEntry> extract(
             String dialogue,
             List<MemoryEntry> existingMemories
@@ -133,8 +136,19 @@ public final class MemoryExtractor {
                 "existingMemories 不能为 null"
         );
 
-        // 没有实际对话内容时不产生额外模型调用。
+        // 1. 先记录提取操作和本次输入是否触发内部截断策略。
+        boolean inputTruncated =
+                dialogue.length()
+                        > MAX_DIALOGUE_CHARACTERS;
+        GenAiSpanAttributes.recordMemoryCreationStart(
+                inputTruncated
+        );
+
+        // 2. 没有实际对话内容时不产生额外模型调用。
         if (dialogue.isBlank()) {
+            GenAiSpanAttributes.recordMemoryRecords(
+                    List.of()
+            );
             return List.of();
         }
 
@@ -212,6 +226,12 @@ public final class MemoryExtractor {
                                         .build()
                         );
 
+        // 记录提取模型调用的标准模型、响应和 Token 属性。
+        GenAiSpanAttributes.recordCompletedMessage(
+                model,
+                response.rawMessage()
+        );
+
         /*
          * [边界：模型达到输出上限 → JSON 可能只生成了一部分；
          * 如果直接反序列化，会把截断误判成普通格式错误，
@@ -270,9 +290,17 @@ public final class MemoryExtractor {
                         .text();
 
         // [核心] 将外部响应 DTO 转换成通过领域校验的记忆对象。
-        return toEntries(
+        List<MemoryEntry> entries = toEntries(
                 batch
         );
+
+        // 3. 只将已经通过领域校验的稳定 ID 写入标准 Memory 结果字段。
+        GenAiSpanAttributes.recordMemoryRecords(
+                entries.stream()
+                        .map(MemoryEntry::name)
+                        .toList()
+        );
+        return entries;
     }
 
     /**

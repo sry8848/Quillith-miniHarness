@@ -11,6 +11,7 @@ import com.anthropic.models.messages.StopReason;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
 
 // 引入选择结果集合和参数检查类型。
 import java.util.ArrayList;
@@ -182,6 +183,12 @@ public final class MemorySelector {
                                         )
                                         .build()
                         );
+
+        // 记录 Selector 模型调用的标准模型、响应和 Token 属性。
+        GenAiSpanAttributes.recordCompletedMessage(
+                model,
+                response
+        );
 
         /*
          * [边界：模型达到输出上限 → JSON 可能只有前半段，

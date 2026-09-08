@@ -27,8 +27,16 @@ public final class HarborRunner {
             );
     private static final String TURN_PREFIX =
             "TURN ";
+    private static final String RECORDED_TURN_PREFIX =
+            "RECORDED_TURN ";
+    private static final String ANSWER_PREFIX =
+            "ANSWER ";
+    private static final String NEW_SESSION =
+            "NEW_SESSION";
     private static final String OK =
             "OK";
+    private static final String RESULT_PREFIX =
+            "RESULT ";
 
     /**
      * 持续接收 Harbor instruction，并顺序提交给当前 Trial 唯一的父 Agent。
@@ -50,10 +58,19 @@ public final class HarborRunner {
         while (true) {
             String request =
                     readRequest();
-            String instruction =
-                    decodeInstruction(
+            Request decodedRequest =
+                    decodeRequest(
                             request
                     );
+
+            // 2. Session 控制消息不属于用户 Turn，也不触发模型或记忆生命周期。
+            if (decodedRequest.type()
+                    == RequestType.NEW_SESSION) {
+                agentSession.startNewSession();
+                writeSuccess();
+                continue;
+            }
+
             turnNumber++;
 
             // PID 只用于验证多个 step 复用了同一个进程，不承担生命周期管理。
@@ -68,12 +85,33 @@ public final class HarborRunner {
                             + "]"
             );
 
-            // 2. 一条 Harbor instruction 只调用一次现有 submit()。
-            agentSession.submit(
-                    instruction
-            );
+            // 3. 根据机器请求选择普通、固定历史或需要返回文本的真实 Turn。
+            String output =
+                    switch (decodedRequest.type()) {
+                        case TURN -> {
+                            agentSession.submit(
+                                    decodedRequest.userText()
+                            );
+                            yield null;
+                        }
+                        case RECORDED_TURN -> {
+                            agentSession.submitRecorded(
+                                    decodedRequest.userText(),
+                                    decodedRequest.assistantText()
+                            );
+                            yield null;
+                        }
+                        case ANSWER ->
+                                agentSession.submit(
+                                        decodedRequest.userText()
+                                );
+                        case NEW_SESSION ->
+                                throw new IllegalStateException(
+                                        "NEW_SESSION 已在 Turn 分支前处理"
+                                );
+                    };
 
-            // 3. submit() 完整返回后，Harbor 才能继续执行本轮 verifier。
+            // 4. submit() 完整返回后，Harbor 才能继续执行本轮 verifier。
             System.out.println(
                     "[Harbor Turn "
                             + turnNumber
@@ -81,7 +119,14 @@ public final class HarborRunner {
                             + processId
                             + "]"
             );
-            writeSuccess();
+            if (decodedRequest.type()
+                    == RequestType.ANSWER) {
+                writeResult(
+                        output
+                );
+            } else {
+                writeSuccess();
+            }
         }
     }
 
@@ -116,25 +161,103 @@ public final class HarborRunner {
      * @param request 单行 TURN 协议消息
      * @return 恢复换行和 Unicode 内容后的原始 instruction
      */
-    static String decodeInstruction(
+    static Request decodeRequest(
             String request
     ) {
-        // 1. 第一版只接受 TURN，不提前扩展控制消息或协议状态。
-        if (!request.startsWith(
-                TURN_PREFIX
+        Objects.requireNonNull(
+                request,
+                "request 不能为空"
+        );
+
+        // 1. NEW_SESSION 不携带文本载荷。
+        if (NEW_SESSION.equals(
+                request
         )) {
-            throw new IllegalArgumentException(
-                    "未知 Harbor 请求类型"
+            return new Request(
+                    RequestType.NEW_SESSION,
+                    null,
+                    null
             );
         }
 
-        // 2. Base64 只承担单行传输边界，解码结果原样提交给模型。
+        // 2. 保持现有 TURN 的单文本协议。
+        if (request.startsWith(
+                TURN_PREFIX
+        )) {
+            return new Request(
+                    RequestType.TURN,
+                    decodeText(
+                            request.substring(
+                                    TURN_PREFIX.length()
+                            )
+                    ),
+                    null
+            );
+        }
+
+        // 3. ANSWER 与 TURN 都提交真实模型，只额外要求返回最终文本。
+        if (request.startsWith(
+                ANSWER_PREFIX
+        )) {
+            return new Request(
+                    RequestType.ANSWER,
+                    decodeText(
+                            request.substring(
+                                    ANSWER_PREFIX.length()
+                            )
+                    ),
+                    null
+            );
+        }
+
+        // 4. 固定历史用两个独立 Base64 字段承载 user 和 assistant。
+        if (request.startsWith(
+                RECORDED_TURN_PREFIX
+        )) {
+            String payload =
+                    request.substring(
+                            RECORDED_TURN_PREFIX.length()
+                    );
+            String[] messages =
+                    payload.split(
+                            " ",
+                            -1
+                    );
+            if (messages.length != 2) {
+                throw new IllegalArgumentException(
+                        "RECORDED_TURN 必须包含 user 和 assistant"
+                );
+            }
+            return new Request(
+                    RequestType.RECORDED_TURN,
+                    decodeText(
+                            messages[0]
+                    ),
+                    decodeText(
+                            messages[1]
+                    )
+            );
+        }
+
+        throw new IllegalArgumentException(
+                "未知 Harbor 请求类型"
+        );
+    }
+
+    /**
+     * 解码一个 Base64 UTF-8 文本字段。
+     *
+     * @param encodedText 单行协议中的 Base64 字段
+     * @return 原始 UTF-8 文本
+     */
+    private static String decodeText(
+            String encodedText
+    ) {
+        // 1. Base64 只承担单行传输边界，解码结果原样交还调用方。
         byte[] instructionBytes =
                 Base64.getDecoder()
                         .decode(
-                                request.substring(
-                                        TURN_PREFIX.length()
-                                )
+                                encodedText
                         );
         return new String(
                 instructionBytes,
@@ -149,6 +272,60 @@ public final class HarborRunner {
      */
     private static void writeSuccess()
             throws IOException {
+        writeResponse(
+                OK
+        );
+    }
+
+    /**
+     * 向响应 FIFO 写入需要评分的最终 assistant 文本。
+     *
+     * @param output 最终 assistant 文本
+     * @throws IOException FIFO 打开、写入或关闭失败
+     */
+    private static void writeResult(
+            String output
+    ) throws IOException {
+        writeResponse(
+                encodeResult(
+                        output
+                )
+        );
+    }
+
+    /**
+     * 把最终 assistant 文本编码为单行 RESULT 响应。
+     *
+     * @param output 最终 assistant 文本
+     * @return 可直接写入 FIFO 的单行响应
+     */
+    static String encodeResult(
+            String output
+    ) {
+        Objects.requireNonNull(
+                output,
+                "output 不能为空"
+        );
+        String encodedOutput =
+                Base64.getEncoder()
+                        .encodeToString(
+                                output.getBytes(
+                                        StandardCharsets.UTF_8
+                                )
+                        );
+        return RESULT_PREFIX
+                + encodedOutput;
+    }
+
+    /**
+     * 向响应 FIFO 写入一条完整的单行协议响应。
+     *
+     * @param response 响应文本
+     * @throws IOException FIFO 打开、写入或关闭失败
+     */
+    private static void writeResponse(
+            String response
+    ) throws IOException {
         // 1. 一次响应对应一个 Turn，写完立即关闭并交还 Harbor。
         try (BufferedWriter writer =
                      Files.newBufferedWriter(
@@ -157,9 +334,31 @@ public final class HarborRunner {
                              StandardOpenOption.WRITE
                      )) {
             writer.write(
-                    OK
+                    response
             );
             writer.newLine();
         }
+    }
+
+    /** Harbor 机器请求类型。 */
+    enum RequestType {
+        TURN,
+        RECORDED_TURN,
+        NEW_SESSION,
+        ANSWER
+    }
+
+    /**
+     * 一条已经完成边界解码的 Harbor 机器请求。
+     *
+     * @param type 请求类型
+     * @param userText TURN、RECORDED_TURN 或 ANSWER 的用户文本
+     * @param assistantText RECORDED_TURN 的固定 assistant 文本
+     */
+    record Request(
+            RequestType type,
+            String userText,
+            String assistantText
+    ) {
     }
 }

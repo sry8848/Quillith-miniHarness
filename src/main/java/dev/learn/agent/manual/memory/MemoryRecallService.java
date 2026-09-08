@@ -1,6 +1,9 @@
 // 声明记忆召回服务所属的包。
 package dev.learn.agent.manual.memory;
 
+import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
+
 // 引入文件读取异常和依赖检查类型。
 import java.io.IOException;
 import java.util.List;
@@ -52,6 +55,7 @@ public final class MemoryRecallService {
      * @throws IOException 记忆目录扫描或选中主题读取失败
      * @throws IllegalStateException 模型选择结果不符合协议
      */
+    @WithSpan("memory.recall")
     public String recall(
             String query
     ) throws IOException {
@@ -67,6 +71,10 @@ public final class MemoryRecallService {
 
         // 尚未保存任何记忆时，不产生额外模型调用。
         if (catalog.isEmpty()) {
+            GenAiSpanAttributes.recordMemorySearch(
+                    0,
+                    List.of()
+            );
             return "";
         }
 
@@ -76,6 +84,12 @@ public final class MemoryRecallService {
                         query,
                         catalog
                 );
+
+        // 1. 记录候选规模和实际返回的稳定 Memory ID，不记录正文。
+        GenAiSpanAttributes.recordMemorySearch(
+                catalog.size(),
+                selectedNames
+        );
 
         // Selector 正常判断没有相关记忆时，不注入空标签。
         if (selectedNames.isEmpty()) {

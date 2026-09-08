@@ -4,6 +4,7 @@ import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.MessageParam;
 import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 
 import java.io.IOException;
 import java.util.List;
@@ -158,6 +159,7 @@ public final class MemoryRuntime {
      * @return 本回合记忆处理结果
      * @throws IOException 记忆文件读写失败
      */
+    @WithSpan("memory.complete_turn")
     public MemoryTurnResult completeTurn(
             List<MessageParam> snapshot
     ) throws IOException {

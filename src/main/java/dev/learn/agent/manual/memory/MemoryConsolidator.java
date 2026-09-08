@@ -7,6 +7,8 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.StopReason;
 import com.anthropic.models.messages.StructuredContentBlock;
 import com.anthropic.models.messages.StructuredMessage;
+import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 
 // 引入文件异常、集合和依赖检查类型。
 import java.io.IOException;
@@ -126,17 +128,26 @@ public final class MemoryConsolidator {
      * @throws IOException 读取、保存或删除主题记忆失败
      * @throws IllegalStateException 输入超出预算，或者模型结果违反整理契约
      */
+    @WithSpan("memory.consolidate")
     public List<MemoryEntry> consolidateIfNeeded()
             throws IOException {
         // [核心] 读取本次整理使用的完整旧记忆快照。
         List<MemoryEntry> previous =
                 repository.list();
 
+        // 1. 先记录 Quillith 判断整理阈值所使用的原始数量。
+        GenAiSpanAttributes.recordMemoryBeforeConsolidation(
+                previous.size()
+        );
+
         // 记忆较少时不增加额外模型调用。
         if (previous.size()
                 < CONSOLIDATE_THRESHOLD) {
             return List.of();
         }
+
+        // 2. 只有达到阈值时才把当前 Span 标记为标准 upsert_memory 操作。
+        GenAiSpanAttributes.recordMemoryConsolidationStart();
 
         // 将每条记忆的身份、摘要和完整正文都放入整理输入。
         StringBuilder catalog =
@@ -205,6 +216,12 @@ public final class MemoryConsolidator {
                                         .build()
                         );
 
+        // 记录整理模型调用的标准模型、响应和 Token 属性。
+        GenAiSpanAttributes.recordCompletedMessage(
+                model,
+                response.rawMessage()
+        );
+
         /*
          * [边界：整理结果被输出上限截断 → 新集合可能缺失尾部记忆；
          * 如果继续替换，未返回的旧记忆会被错误地当作应删除内容]
@@ -264,6 +281,13 @@ public final class MemoryConsolidator {
                         batch,
                         previous.size()
                 );
+
+        // 3. 只记录已经完成整批校验的整理结果 ID，不记录正文。
+        GenAiSpanAttributes.recordMemoryRecords(
+                consolidated.stream()
+                        .map(MemoryEntry::name)
+                        .toList()
+        );
 
         // 准备最终应当保留的主题名称。
         Set<String> retainedNames =

@@ -659,8 +659,8 @@ public final class MemoryRepository {
     /**
      * 读取当前项目的 MEMORY.md 索引。
      *
-     * .memory 从未创建时返回空字符串；
-     * 记忆目录已经存在但索引缺失时视为状态不一致。
+     * .memory 从未创建，或目录只包含非记忆运行数据时返回空字符串；
+     * 主题文件已经存在但索引缺失时视为状态不一致。
      *
      * @return 去掉首尾空白的索引文本；没有记忆目录时返回空字符串
      * @throws IOException 记忆目录或索引状态异常、读取失败
@@ -710,17 +710,19 @@ public final class MemoryRepository {
                         MEMORY_INDEX_FILENAME
                 );
 
-        /*
-         * [边界：当主题文件可能已经存在但 MEMORY.md 丢失时，
-         * 防止返回空索引，使 Agent 静默忘记全部可用记忆]
-         *
-         * .memory 已经存在表示仓库进入过持久化生命周期；
-         * 索引缺失应暴露为不一致状态，而不是“从未有过记忆”。
-         */
+        // 1. 索引缺失时先区分空记忆仓库和已有主题的损坏仓库。
         if (Files.notExists(
                 indexFile,
                 LinkOption.NOFOLLOW_LINKS
         )) {
+            if (list().isEmpty()) {
+                return "";
+            }
+
+            /*
+             * SessionStore 也会在 .memory 中保存 sessions.db，
+             * 所以目录存在本身不能再证明长期记忆已经初始化。
+             */
             throw new NoSuchFileException(
                     indexFile.toString()
             );

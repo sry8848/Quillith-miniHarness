@@ -8,17 +8,20 @@ import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.memory.MemoryType;
+import dev.learn.agent.manual.session.SessionStore;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -29,6 +32,118 @@ class MemorySystemPromptProviderTest {
     // 为每个测试提供隔离的工作区。
     @TempDir
     Path workspace;
+
+    /**
+     * Given SessionStore 已创建 .memory，when 还没有长期记忆主题，then 启动得到空索引。
+     */
+    @Test
+    void treatsSessionDatabaseWithoutMemoryTopicsAsEmptyMemory()
+            throws IOException {
+        AnthropicClient client =
+                testClient();
+        try (SessionStore ignored =
+                     new SessionStore(
+                             workspace
+                     )) {
+            SessionState sessionState =
+                    new SessionState(
+                            true,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
+            MemoryRuntime runtime =
+                    new MemoryRuntime(
+                            sessionState,
+                            client,
+                            "test-model",
+                            new WorkspacePathResolver(
+                                    sessionState
+                            )
+                    );
+            SystemPromptManager manager =
+                    new SystemPromptManager(
+                            List.of(
+                                    new MemorySystemPromptProvider(
+                                            runtime
+                                    )
+                            )
+                    );
+
+            // 1. sessions.db 不属于长期记忆主题，不能阻止全新 workspace 启动。
+            SystemPrompt prompt =
+                    manager.refreshFrom(
+                            RefreshScope.APPLICATION,
+                            sessionState
+                    );
+
+            assertFalse(
+                    prompt.content()
+                            .contains(
+                                    "<memory>"
+                            )
+            );
+        } finally {
+            client.close();
+        }
+    }
+
+    /**
+     * Given 已有长期记忆主题，when MEMORY.md 丢失，then 仍暴露仓库损坏。
+     */
+    @Test
+    void rejectsMemoryTopicsWithoutIndex()
+            throws IOException {
+        Path memoryDirectory =
+                Files.createDirectories(
+                        workspace.resolve(
+                                ".memory"
+                        )
+                );
+        Files.writeString(
+                memoryDirectory.resolve(
+                        "project-fact.md"
+                ),
+                "---\n"
+                        + "name: project-fact\n"
+                        + "description: 项目事实\n"
+                        + "type: project\n"
+                        + "---\n"
+                        + "正文\n"
+        );
+        AnthropicClient client =
+                testClient();
+        try {
+            SessionState sessionState =
+                    new SessionState(
+                            true,
+                            ToolApprovalMode.BYPASS,
+                            workspace,
+                            workspace,
+                            List.of(workspace),
+                            null
+                    );
+            MemoryRuntime runtime =
+                    new MemoryRuntime(
+                            sessionState,
+                            client,
+                            "test-model",
+                            new WorkspacePathResolver(
+                                    sessionState
+                            )
+                    );
+
+            // 1. 已有主题意味着索引缺失是真实不一致，不能作为空仓库读取。
+            assertThrows(
+                    IllegalStateException.class,
+                    runtime::loadIndex
+            );
+        } finally {
+            client.close();
+        }
+    }
 
     /**
      * Given 已保存记忆，when 刷新 System Prompt，then 只注入索引内容。

@@ -15,7 +15,9 @@ import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.session.ConversationState;
 import dev.learn.agent.manual.session.SessionStore;
+import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -103,18 +105,65 @@ public final class AgentSession {
      * 按现有父用户 Turn 顺序处理一条消息。
      *
      * @param query 用户输入
+     * @return 当前 Turn 的最终 assistant 文本；输入被 Hook 阻止时为空字符串
      * @throws IOException 记忆读取或写入失败
-     * @throws AnthropicServiceException Provider Error 无法恢复时，在诊断和回滚后抛出
+     * @throws AnthropicServiceException Provider Error 无法恢复时，在诊断后抛出
      */
-    public void submit(
+    public String submit(
             String query
+    ) throws IOException {
+        return submitInternal(
+                query,
+                null
+        );
+    }
+
+    /**
+     * 按正常 Turn 生命周期提交固定的 user/assistant 历史。
+     *
+     * @param userText 固定历史中的 user 文本
+     * @param assistantText 固定历史中的 assistant 文本
+     * @return 已经提交的固定 assistant 文本；输入被 Hook 阻止时为空字符串
+     * @throws IOException 记忆读取或写入失败
+     */
+    public String submitRecorded(
+            String userText,
+            String assistantText
+    ) throws IOException {
+        Objects.requireNonNull(
+                assistantText,
+                "assistantText 不能为 null"
+        );
+        return submitInternal(
+                userText,
+                assistantText
+        );
+    }
+
+    /**
+     * 执行 live 和 recorded Turn 共用的 Session 与 Memory 生命周期。
+     *
+     * @param query 用户输入
+     * @param recordedAssistant 固定 assistant；{@code null} 表示调用真实模型
+     * @return 当前 Turn 的最终 assistant 文本；输入被 Hook 阻止时为空字符串
+     * @throws IOException 记忆读取或写入失败
+     */
+    @WithSpan("agent.turn")
+    private String submitInternal(
+            String query,
+            String recordedAssistant
     ) throws IOException {
         Objects.requireNonNull(
                 query,
                 "query 不能为 null"
         );
 
-        // 1. UserPromptSubmit Hook 可以阻止当前输入，或为本轮提供额外上下文。
+        // 1. 将完整 Turn 关联到标准 GenAI Agent 操作和稳定 Session。
+        GenAiSpanAttributes.recordAgentInvocation(
+                sessionState.sessionId()
+        );
+
+        // 2. UserPromptSubmit Hook 可以阻止当前输入，或为本轮提供额外上下文。
         HookEffect promptEffect =
                 hookRegistry
                         .triggerUserPromptSubmit(
@@ -127,10 +176,10 @@ public final class AgentSession {
                     "消息被 Hook 阻止："
                             + promptEffect.reason()
             );
-            return;
+            return "";
         }
 
-        // 2. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
+        // 3. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
                 sessionState
@@ -141,7 +190,8 @@ public final class AgentSession {
                         query
                 );
 
-        // 3. 记录本轮原始用户消息，Provider 最终失败时以它作为回滚边界。
+        // 4. 首条通过 Hook 的用户消息在请求 Provider 前创建 Session。
+        // 用户输入一旦被接受就是已发生事实，Provider 失败不能撤销它。
         MessageParam userMessage =
                 MessageParam.builder()
                         .role(
@@ -161,7 +211,7 @@ public final class AgentSession {
         }
         conversationState.appendCommitted(userMessage);
 
-        // 4. Hook 上下文仍作为独立的隐藏用户提醒进入会话历史。
+        // 5. Hook 上下文仍作为独立的隐藏用户提醒进入会话历史。
         if (!promptEffect.additionalContexts()
                 .isEmpty()) {
             MessageParam hookMessage = MessageParam.builder()
@@ -182,38 +232,34 @@ public final class AgentSession {
             conversationState.appendCommitted(hookMessage);
         }
 
-        // 5. AgentLoop 可能压缩 history，因此先保存 Memory complete 使用的文本视图。
+        // 6. AgentLoop 可能压缩 history，因此先保存 Memory complete 使用的文本视图。
         List<MessageParam> memoryExtractionSnapshot =
                 memoryRuntime.capture(
                         conversationState.messages()
                 );
 
-        // 6. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
+        // 7. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
+        String output;
         try {
-            agentLoop.run(
+            output = recordedAssistant == null
+                    ? agentLoop.run(
                     conversationState,
                     recalledMemories
+            )
+                    : agentLoop.runRecorded(
+                    conversationState,
+                    recalledMemories,
+                    recordedAssistant
             );
         } catch (AnthropicServiceException exception) {
-            // 7. 保留现有诊断和回滚，再把失败交给 Runner 决定继续会话还是结束进程。
+            // 8. Provider 失败只终止本次执行，已经 durable 的 Session 事实保持不变。
             printProviderError(
                     exception
             );
-            rollbackFailedTurn(
-                    conversationState.messages(),
-                    userMessage
-            );
-            rollbackFailedTurn(conversationState.modelContext(), userMessage);
-            sessionStore.restoreAfterFailedTurn(
-                    sessionState.sessionId(),
-                    conversationState.messages(),
-                    conversationState
-            );
-            persisted = !conversationState.messages().isEmpty();
             throw exception;
         }
 
-        // 8. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
+        // 9. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
         MemoryTurnResult memoryTurnResult =
                 memoryRuntime.completeTurn(
                         memoryExtractionSnapshot
@@ -234,6 +280,8 @@ public final class AgentSession {
                 );
             }
         }
+
+        return output;
     }
 
     /**
@@ -248,6 +296,32 @@ public final class AgentSession {
      */
     public String sessionId() {
         return sessionState.sessionId();
+    }
+
+    /**
+     * 创建不继承当前活动上下文的新 Session，同时保留工作区长期记忆。
+     *
+     * @return 新 Session ID
+     */
+    public String startNewSession() {
+        // 1. 清空完整历史、活动模型上下文和旧 Checkpoint 位置。
+        conversationState.restore(
+                List.of(),
+                List.of(),
+                -1
+        );
+
+        // 2. 切换 Session 身份，让下一条用户消息创建新的持久化记录。
+        String newSessionId =
+                sessionState.startNewSession();
+        persisted = false;
+
+        // 新 Session 必须刷新动态提示词，但继续读取同一个 workspace Memory。
+        systemPromptManager.refreshFrom(
+                RefreshScope.SESSION,
+                sessionState
+        );
+        return newSessionId;
     }
 
     /**
@@ -598,23 +672,4 @@ public final class AgentSession {
                 : node.toString();
     }
 
-    private static void rollbackFailedTurn(
-            List<MessageParam> history,
-            MessageParam userMessage
-    ) {
-        for (int index = 0;
-             index < history.size();
-             index++) {
-            if (history.get(index)
-                    != userMessage) {
-                continue;
-            }
-
-            history.subList(
-                    index,
-                    history.size()
-            ).clear();
-            return;
-        }
-    }
 }

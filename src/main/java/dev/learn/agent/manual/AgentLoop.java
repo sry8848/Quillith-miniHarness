@@ -341,6 +341,51 @@ public final class AgentLoop {
             ConversationState conversationState,
             String turnContext
     ) {
+        return runInternal(
+                conversationState,
+                turnContext,
+                null
+        );
+    }
+
+    /**
+     * 执行真实请求前治理，并提交一个已经完成的 assistant 文本。
+     *
+     * @param conversationState 当前会话的双视图状态
+     * @param turnContext 只进入本轮模型请求的临时上下文
+     * @param assistantText 已经完成的固定 assistant 文本
+     * @return 已经提交的固定 assistant 文本
+     */
+    @WithSpan("agent.run.recorded")
+    public String runRecorded(
+            ConversationState conversationState,
+            String turnContext,
+            String assistantText
+    ) {
+        Objects.requireNonNull(
+                assistantText,
+                "assistantText 不能为 null"
+        );
+        return runInternal(
+                conversationState,
+                turnContext,
+                assistantText
+        );
+    }
+
+    /**
+     * 执行 live 和 recorded Turn 共用的请求前生命周期。
+     *
+     * @param conversationState 当前会话的双视图状态
+     * @param turnContext 只进入本轮模型请求的临时上下文
+     * @param recordedAssistant 固定 assistant；{@code null} 表示调用真实模型
+     * @return 当前 Turn 的最终 assistant 文本
+     */
+    private String runInternal(
+            ConversationState conversationState,
+            String turnContext,
+            String recordedAssistant
+    ) {
         Objects.requireNonNull(conversationState, "conversationState 不能为空");
         List<MessageParam> messages = conversationState.modelContext();
 
@@ -468,6 +513,28 @@ public final class AgentLoop {
                         conversationState.latestSequence()
                 );
                 turnJournal.saveContextCheckpoint(conversationState);
+            }
+
+            // 7. recorded Turn 在真实请求前治理完成后提交固定 assistant。
+            if (recordedAssistant != null) {
+                MessageParam assistantMessage =
+                        MessageParam.builder()
+                                .role(
+                                        MessageParam.Role.ASSISTANT
+                                )
+                                .content(
+                                        recordedAssistant
+                                )
+                                .build();
+                commitCompletedTurn(
+                        conversationState,
+                        List.of(
+                                assistantMessage
+                        )
+                );
+
+                // 固定历史已经是完整响应，不再执行 Provider、工具或 Stop Hook。
+                return recordedAssistant;
             }
 
             // 声明当前模型流结果和工具调用状态。

@@ -108,6 +108,40 @@ class SessionStateTest {
     }
 
     /**
+     * 验证显式新建 Session 只切换身份，不改变运行配置和路径边界。
+     */
+    @Test
+    void startsNewSessionWithoutChangingRuntimeConfiguration() {
+        Path agentHome = Path.of("agent-home");
+        Path workspace = Path.of("workspace");
+        Path gitRoot = Path.of("git-root");
+        List<Path> allowedRoots = List.of(workspace);
+        SessionState state =
+                new SessionState(
+                        true,
+                        ToolApprovalMode.BYPASS,
+                        agentHome,
+                        workspace,
+                        allowedRoots,
+                        gitRoot
+                );
+        String previousSessionId =
+                state.sessionId();
+
+        String newSessionId =
+                state.startNewSession();
+
+        assertNotEquals(previousSessionId, newSessionId);
+        assertEquals(newSessionId, state.sessionId());
+        assertTrue(state.memoryEnabled());
+        assertEquals(ToolApprovalMode.BYPASS, state.approvalMode());
+        assertEquals(agentHome, state.agentHome());
+        assertEquals(workspace, state.workspace());
+        assertEquals(allowedRoots, state.allowedRoots());
+        assertEquals(gitRoot, state.gitRoot());
+    }
+
+    /**
      * 验证可变字段可以独立修改，不限制 allowedRoots 的元素数量。
      */
     @Test

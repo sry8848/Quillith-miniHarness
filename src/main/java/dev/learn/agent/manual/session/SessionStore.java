@@ -234,30 +234,6 @@ public final class SessionStore implements AutoCloseable {
     }
 
     /**
-     * 把 Provider 失败后的数据库状态恢复为当前内存事实。
-     */
-    public synchronized void restoreAfterFailedTurn(
-            String sessionId,
-            List<MessageParam> messages,
-            ConversationState conversationState
-    ) {
-        inTransaction(connection -> {
-            // 1. 首轮失败没有 committed history，删除暂存 Session 以保持列表语义。
-            if (messages.isEmpty()) {
-                deleteSession(connection, sessionId);
-                return null;
-            }
-
-            // 2. 用回滚后的完整历史替换旧记录，再恢复当前 Checkpoint。
-            deleteMessages(connection, sessionId);
-            insertMessages(connection, sessionId, 0, messages);
-            saveCheckpoint(connection, sessionId, conversationState);
-            touch(connection, sessionId);
-            return null;
-        });
-    }
-
-    /**
      * 加载 Session、Checkpoint 与尚未封口的模型回复。
      */
     public synchronized LoadedSession loadSession(
@@ -461,43 +437,6 @@ public final class SessionStore implements AutoCloseable {
             return summary.length() <= 80 ? summary : summary.substring(0, 80) + "…";
         }
         return "";
-    }
-
-    private void saveCheckpoint(Connection connection, String sessionId, ConversationState state) throws SQLException {
-        try (PreparedStatement delete = connection.prepareStatement(
-                "DELETE FROM context_checkpoints WHERE session_id = ?")) {
-            delete.setString(1, sessionId);
-            delete.executeUpdate();
-        }
-        if (state.checkpointThroughSeq() >= 0) {
-            try (PreparedStatement insert = connection.prepareStatement(
-                    "INSERT INTO context_checkpoints(session_id, through_seq, context_json) VALUES (?, ?, ?)")) {
-                insert.setString(1, sessionId);
-                insert.setLong(2, state.checkpointThroughSeq());
-                insert.setString(3, writeJson(state.modelContext()));
-                insert.executeUpdate();
-            }
-        }
-    }
-
-    private void deleteMessages(Connection connection, String sessionId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("DELETE FROM messages WHERE session_id = ?")) {
-            statement.setString(1, sessionId);
-            statement.executeUpdate();
-        }
-    }
-
-    private void deleteSession(Connection connection, String sessionId) throws SQLException {
-        try (PreparedStatement tools = connection.prepareStatement("DELETE FROM tool_executions WHERE session_id = ?");
-             PreparedStatement inflight = connection.prepareStatement("DELETE FROM inflight_response WHERE session_id = ?");
-             PreparedStatement checkpoint = connection.prepareStatement("DELETE FROM context_checkpoints WHERE session_id = ?");
-             PreparedStatement messages = connection.prepareStatement("DELETE FROM messages WHERE session_id = ?");
-             PreparedStatement session = connection.prepareStatement("DELETE FROM sessions WHERE session_id = ?")) {
-            for (PreparedStatement statement : List.of(tools, inflight, checkpoint, messages, session)) {
-                statement.setString(1, sessionId);
-                statement.executeUpdate();
-            }
-        }
     }
 
     private static void requireSingleRow(int changed, String message) {

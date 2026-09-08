@@ -3,6 +3,7 @@ package dev.learn.agent.manual;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.errors.AnthropicServiceException;
+import com.anthropic.models.messages.MessageParam;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
@@ -15,6 +16,9 @@ import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.memory.MemoryRuntime;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
+import dev.learn.agent.manual.session.ConversationState;
+import dev.learn.agent.manual.session.SessionStore;
+import dev.learn.agent.manual.session.SessionTurnJournal;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.tool.ToolRegistry;
 import dev.learn.agent.manual.tool.approval.DefaultToolApprovalPolicy;
@@ -38,7 +42,6 @@ import java.util.List;
 import java.util.Scanner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -149,16 +152,14 @@ class AgentSessionTest {
     }
 
     @Test
-    void rollsBackAnUnrecoverableProviderError()
+    void retainsFirstUserMessageAndAllowsResumeAfterProviderError()
             throws Exception {
+        String sessionId;
         try (AgentSessionFixture fixture =
                      new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
-                             List.of(
-                                     ProviderResponse.providerError(),
-                                     ProviderResponse.finalText()
-                             )
+                             List.of(ProviderResponse.providerError())
                      )) {
             assertThrows(
                     AnthropicServiceException.class,
@@ -168,31 +169,229 @@ class AgentSessionTest {
                                             "failed request"
                                     )
             );
-            fixture.agentSession()
-                    .submit(
-                            "retry request"
-                    );
 
-            assertEquals(
-                    2,
-                    fixture.requestBodies()
-                            .size()
-            );
-            String retryRequest =
-                    fixture.requestBodies()
-                            .get(1);
-            assertFalse(
-                    retryRequest.contains(
-                            "failed request"
-                    ),
-                    retryRequest
-            );
+            // 1. 首次 Provider 失败后，已接受的用户输入仍是持久化 Session 事实。
+            sessionId = fixture.agentSession().sessionId();
+            assertEquals(1, fixture.agentSession().listSessions().size());
+            try (SessionStore store = new SessionStore(workspace)) {
+                assertEquals(
+                        List.of("failed request"),
+                        store.loadSession(sessionId, workspace.toString()).messages().stream()
+                                .map(message -> message.content().asString())
+                                .toList()
+                );
+            }
+        }
+
+        try (AgentSessionFixture resumedFixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(ProviderResponse.finalText())
+                     )) {
+            // 2. 新 Runtime 的 resume 只加载 history，不触发新的 Provider 请求。
+            resumedFixture.agentSession().resume(sessionId);
+            assertTrue(resumedFixture.requestBodies().isEmpty());
+
+            // 3. 恢复后下一次提交会把失败前的用户消息继续带给 Provider。
+            resumedFixture.agentSession().submit("retry request");
+            String retryRequest = resumedFixture.requestBodies().getFirst();
+            assertTrue(retryRequest.contains("failed request"), retryRequest);
             assertTrue(
                     retryRequest.contains(
                             "retry request"
                     ),
                     retryRequest
             );
+        }
+    }
+
+    /** 验证 AgentSession 不再丢弃 AgentLoop 已经产生的最终文本。 */
+    @Test
+    void returnsFinalAssistantText()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.finalText()
+                             )
+                     )) {
+            String output =
+                    fixture.agentSession()
+                            .submit(
+                                    "return the result"
+                            );
+
+            assertEquals(
+                    "done",
+                    output
+            );
+        }
+    }
+
+    /** 验证固定 assistant 不调用 Provider，但会进入下一次真实请求的历史。 */
+    @Test
+    void recordedTurnCommitsFixedAssistantWithoutCallingProvider()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.finalText()
+                             )
+                     )) {
+            String recordedOutput =
+                    fixture.agentSession()
+                            .submitRecorded(
+                                    "remember this user fact",
+                                    "fixed assistant response"
+                            );
+
+            assertEquals(
+                    "fixed assistant response",
+                    recordedOutput
+            );
+            assertTrue(
+                    fixture.requestBodies()
+                            .isEmpty()
+            );
+
+            fixture.agentSession()
+                    .submit(
+                            "answer now"
+                    );
+
+            assertEquals(
+                    1,
+                    fixture.requestBodies()
+                            .size()
+            );
+            String liveRequest =
+                    fixture.requestBodies()
+                            .getFirst();
+            assertTrue(
+                    liveRequest.contains(
+                            "remember this user fact"
+                    ),
+                    liveRequest
+            );
+            assertTrue(
+                    liveRequest.contains(
+                            "fixed assistant response"
+                    ),
+                    liveRequest
+            );
+        }
+    }
+
+    /** 验证新 Session 清空活动上下文，同时保留旧 Session 的持久化事实。 */
+    @Test
+    void newSessionClearsConversationAndKeepsPreviousSession()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.finalText()
+                             )
+                     )) {
+            fixture.agentSession()
+                    .submitRecorded(
+                            "old user fact",
+                            "old assistant fact"
+                    );
+            String previousSessionId =
+                    fixture.agentSession()
+                            .sessionId();
+
+            String newSessionId =
+                    fixture.agentSession()
+                            .startNewSession();
+            fixture.agentSession()
+                    .submit(
+                            "new session question"
+                    );
+
+            assertTrue(
+                    !previousSessionId.equals(
+                            newSessionId
+                    )
+            );
+            String liveRequest =
+                    fixture.requestBodies()
+                            .getFirst();
+            assertTrue(
+                    !liveRequest.contains(
+                            "old user fact"
+                    ),
+                    liveRequest
+            );
+            assertTrue(
+                    !liveRequest.contains(
+                            "old assistant fact"
+                    ),
+                    liveRequest
+            );
+            assertTrue(
+                    liveRequest.contains(
+                            "new session question"
+                    ),
+                    liveRequest
+            );
+
+            SessionStore.LoadedSession previousSession =
+                    fixture.sessionStore()
+                            .loadSession(
+                                    previousSessionId,
+                                    workspace.toString()
+                            );
+            assertEquals(
+                    2,
+                    previousSession.messages()
+                            .size()
+            );
+            assertEquals(
+                    workspace,
+                    fixture.sessionState()
+                            .workspace()
+            );
+        }
+    }
+
+    @Test
+    void retainsCompletedToolFactsWhenNextProviderRoundFails()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.toolUse(),
+                                     ProviderResponse.providerError()
+                             )
+                     )) {
+            assertThrows(
+                    AnthropicServiceException.class,
+                    () -> fixture.agentSession().submit("run a tool")
+            );
+
+            // 已完成的 tool_use/tool_result 在下一轮 Provider 失败后仍保留在完整 history。
+            try (SessionStore store = new SessionStore(workspace)) {
+                List<MessageParam> messages = store.loadSession(
+                        fixture.agentSession().sessionId(),
+                        workspace.toString()
+                ).messages();
+                assertEquals(3, messages.size());
+                assertEquals("run a tool", messages.getFirst().content().asString());
+                assertEquals(MessageParam.Role.ASSISTANT, messages.get(1).role());
+                assertTrue(messages.get(1).content().asBlockParams().getFirst().isToolUse());
+                assertEquals(MessageParam.Role.USER, messages.get(2).role());
+                assertTrue(messages.get(2).content().asBlockParams().getFirst().isToolResult());
+            }
         }
     }
 
@@ -221,6 +420,41 @@ class AgentSessionTest {
                     1,
                     fixture.requestBodies()
                             .size()
+            );
+        }
+    }
+
+    /** 验证便宜的本地替身可以走完整 Memory 提取与保存链路。 */
+    @Test
+    void completesMemoryTurnWithStructuredProviderResponse()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.finalText(),
+                                     ProviderResponse.structuredMemory()
+                             ),
+                             true
+                     )) {
+            // 1. 主模型完成后，Memory 提取使用第二个固定响应保存一条记忆。
+            fixture.agentSession()
+                    .submit(
+                            "I prefer dark mode"
+                    );
+
+            assertEquals(
+                    2,
+                    fixture.requestBodies()
+                            .size()
+            );
+            assertTrue(
+                    workspace.resolve(
+                                    ".memory/user-interface-preference.md"
+                            )
+                            .toFile()
+                            .isFile()
             );
         }
     }
@@ -378,6 +612,7 @@ class AgentSessionTest {
         private final AnthropicClient client;
         private final BackgroundTaskScheduler backgroundScheduler;
         private final SessionState sessionState;
+        private final SessionStore sessionStore;
         private final AgentSession agentSession;
 
         private AgentSessionFixture(
@@ -441,6 +676,7 @@ class AgentSessionTest {
                             List.of(workspace),
                             workspace
                     );
+            sessionStore = new SessionStore(sessionState.agentHome());
             WorkspacePathResolver paths =
                     new WorkspacePathResolver(
                             sessionState
@@ -487,7 +723,8 @@ class AgentSessionTest {
                             3,
                             new ModelRequestRecoveryManager(
                                     List.of()
-                            )
+                            ),
+                            new SessionTurnJournal(sessionStore, sessionState)
                     );
             agentSession =
                     new AgentSession(
@@ -495,7 +732,9 @@ class AgentSessionTest {
                             memoryRuntime,
                             hookRegistry,
                             systemPromptManager,
-                            sessionState
+                            sessionState,
+                            sessionStore,
+                            new ConversationState()
                     );
         }
 
@@ -511,8 +750,13 @@ class AgentSessionTest {
             return requestBodies;
         }
 
+        private SessionStore sessionStore() {
+            return sessionStore;
+        }
+
         @Override
         public void close() {
+            sessionStore.close();
             backgroundScheduler.close();
             client.close();
             server.stop(0);
@@ -540,6 +784,31 @@ class AgentSessionTest {
                     "{\"type\":\"server_error\",\"message\":\"provider failed\"}"
             );
         }
+
+        private static ProviderResponse toolUse() {
+            return new ProviderResponse(
+                    200,
+                    "text/event-stream",
+                    toolUseStream()
+            );
+        }
+
+        /** 返回一条符合 SDK 结构化输出协议的固定 Memory 响应。 */
+        private static ProviderResponse structuredMemory() {
+            return new ProviderResponse(
+                    200,
+                    "application/json",
+                    "{\"id\":\"msg-memory\",\"type\":\"message\","
+                            + "\"role\":\"assistant\",\"content\":[{\"type\":\"text\","
+                            + "\"text\":\"{\\\"memories\\\":[{\\\"name\\\":"
+                            + "\\\"user-interface-preference\\\",\\\"type\\\":\\\"user\\\","
+                            + "\\\"description\\\":\\\"User prefers dark mode\\\","
+                            + "\\\"body\\\":\\\"The user prefers dark mode.\\\"}]}\"}],"
+                            + "\"model\":\"test-model\",\"stop_reason\":\"end_turn\","
+                            + "\"stop_sequence\":null,\"usage\":{\"input_tokens\":8,"
+                            + "\"output_tokens\":12}}"
+            );
+        }
     }
 
     private static String finalTextStream() {
@@ -553,6 +822,19 @@ class AgentSessionTest {
                 + "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
                 + "event: message_delta\n"
                 + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+                + "event: message_stop\n"
+                + "data: {\"type\":\"message_stop\"}\n\n";
+    }
+
+    private static String toolUseStream() {
+        return "event: message_start\n"
+                + "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+                + "event: content_block_start\n"
+                + "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"missing_tool\",\"input\":{}}}\n\n"
+                + "event: content_block_stop\n"
+                + "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+                + "event: message_delta\n"
+                + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
                 + "event: message_stop\n"
                 + "data: {\"type\":\"message_stop\"}\n\n";
     }

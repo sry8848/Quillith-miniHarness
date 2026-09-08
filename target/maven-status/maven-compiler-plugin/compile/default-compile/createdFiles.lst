@@ -29,6 +29,7 @@ dev\learn\agent\manual\context\ContextManager.class
 dev\learn\agent\manual\tool\entity\TodoStatus.class
 dev\learn\agent\manual\session\SessionStore.class
 dev\learn\agent\manual\hook\hooks\TodoReminderHook$1.class
+dev\learn\agent\manual\cli\HarborRunner$RequestType.class
 dev\learn\agent\manual\skill\SkillDefinition.class
 dev\learn\agent\manual\hook\HookRegistry.class
 dev\learn\agent\manual\session\ConversationState.class
@@ -53,6 +54,7 @@ dev\learn\agent\manual\session\SessionPersistenceException.class
 dev\learn\agent\manual\context\ContextManager$PersistencePlan.class
 dev\learn\agent\manual\memory\MemoryType.class
 dev\learn\agent\manual\AgentLoop$ContentRejectionDirection.class
+dev\learn\agent\manual\cli\HarborRunner$Request.class
 dev\learn\agent\manual\mcp\GitMcpClient.class
 dev\learn\agent\manual\tool\ToolRetryPolicy.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryState.class

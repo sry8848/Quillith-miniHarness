@@ -1,5 +1,9 @@
 [CmdletBinding()]
 param(
+    [string] $Agent = "harbor_adapter:QuillithHarborAgent",
+
+    [string] $OpenTelemetryAgentPath = "C:\tools\opentelemetry-javaagent.jar",
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $HarborArguments
 )
@@ -21,7 +25,14 @@ if (-not (Test-Path -LiteralPath $jarPath -PathType Leaf)) {
 }
 $jarPath = (Resolve-Path -LiteralPath $jarPath).Path
 
-# 3. 只为当前 Harbor 子进程暴露项目内 Adapter import path。
+# 3. 使用宿主机已经验证的 OpenTelemetry Java Agent，不在 Trial 内下载。
+if (-not (Test-Path -LiteralPath $OpenTelemetryAgentPath -PathType Leaf)) {
+    throw "OpenTelemetry Java Agent 不存在：$OpenTelemetryAgentPath"
+}
+$OpenTelemetryAgentPath =
+        (Resolve-Path -LiteralPath $OpenTelemetryAgentPath).Path
+
+# 4. 只为当前 Harbor 子进程暴露项目内 Adapter import path。
 $previousPythonPath = $env:PYTHONPATH
 $pathSeparator = [System.IO.Path]::PathSeparator
 if ([string]::IsNullOrWhiteSpace($previousPythonPath)) {
@@ -31,12 +42,13 @@ if ([string]::IsNullOrWhiteSpace($previousPythonPath)) {
             "$projectDirectory$pathSeparator$previousPythonPath"
 }
 
-# 4. 注入固定 Adapter 和本次唯一 JAR，其余参数原样转交 harbor run。
+# 5. 注入调用方选择的 Adapter 和两个运行 JAR，其余参数原样转交 harbor run。
 $harborExitCode = 1
 try {
     & harbor run `
-        --agent "harbor_adapter:QuillithHarborAgent" `
+        --agent $Agent `
         --agent-kwarg "jar_path=$jarPath" `
+        --agent-kwarg "otel_agent_path=$OpenTelemetryAgentPath" `
         @HarborArguments
     $harborExitCode = $LASTEXITCODE
 } finally {
