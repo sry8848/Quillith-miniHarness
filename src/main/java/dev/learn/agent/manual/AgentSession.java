@@ -14,6 +14,7 @@ import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.session.ConversationState;
+import dev.learn.agent.manual.context.ConversationCompactor;
 import dev.learn.agent.manual.session.SessionStore;
 import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
@@ -44,20 +45,7 @@ public final class AgentSession {
     private final SessionStore sessionStore;
     private final ConversationState conversationState;
     private boolean persisted;
-
-    /**
-     * 创建绑定一份父会话历史的 AgentSession。
-     */
-    public AgentSession(
-            AgentLoop agentLoop,
-            MemoryRuntime memoryRuntime,
-            HookRegistry hookRegistry,
-            SystemPromptManager systemPromptManager,
-            SessionState sessionState
-    ) {
-        this(agentLoop, memoryRuntime, hookRegistry, systemPromptManager, sessionState,
-                createSessionStore(sessionState), new ConversationState());
-    }
+    private final ConversationCompactor conversationCompactor;
 
     /**
      * 创建带有显式 Session 存储和双视图状态的父会话。
@@ -69,7 +57,8 @@ public final class AgentSession {
             SystemPromptManager systemPromptManager,
             SessionState sessionState,
             SessionStore sessionStore,
-            ConversationState conversationState
+            ConversationState conversationState,
+            ConversationCompactor conversationCompactor
     ) {
         this.agentLoop =
                 Objects.requireNonNull(
@@ -98,14 +87,13 @@ public final class AgentSession {
                 );
         this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore 不能为空");
         this.conversationState = Objects.requireNonNull(conversationState, "conversationState 不能为空");
+        this.conversationCompactor = conversationCompactor;
     }
 
-    private static SessionStore createSessionStore(SessionState sessionState) {
-        try {
-            return new SessionStore(sessionState.agentHome());
-        } catch (IOException exception) {
-            throw new java.io.UncheckedIOException("创建 SessionStore 失败", exception);
-        }
+    /** 手动压缩当前持久化会话；没有新增中间 Turn 时返回 false。 */
+    public boolean compact() {
+        // 1. 空会话没有数据库记录，命令不创建新的 Session 或 Turn。
+        return persisted && conversationCompactor.compact(conversationState);
     }
 
     /**

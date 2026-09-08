@@ -35,8 +35,6 @@
 
 “用户 Turn”以 SQLite `turn_seq` 为边界，不按 `MessageParam.role == USER` 的消息数计算。一个 Turn 内的用户输入、Hook reminder、assistant、`tool_use` 和 `tool_result` 必须整体保留或整体进入摘要，不能拆开协议消息。
 
-少于 9 个 Turn 时没有中间区域，`compact()` 不调用摘要模型、不改 `modelContext`、不写 Checkpoint。覆盖范围没有扩大的重复压缩同样是无操作。
-
 `snipMiddle()` 和 `compactOldToolResults()` 不再参与请求前 Conversation Compression；不保留另一条可被误调用的旧压缩管线。
 
 ### 2. Canonical messages
@@ -64,7 +62,7 @@ coverage: <from_seq>-<to_seq>
 摘要段落……
 ```
 
-`coverage` 使用 SQLite `seq` 的闭区间，表示该摘要总体替代的全部中间 canonical messages。摘要正文由模型生成若干段，每段以 `[消息 X-Y]` 标明其事实来源范围；宿主负责外层 `session_id` 和总体 coverage，不信任模型生成这些字段。
+`coverage` 使用 SQLite `seq` 的闭区间，表示该摘要总体替代的全部中间 canonical messages。摘要正文由模型生成若干段，每段以 `[消息 X-Y]` 标明其事实来源范围；宿主负责外层 `session_id` 和总体 coverage
 
 ### 4. 递归压缩
 
@@ -75,7 +73,7 @@ coverage: <from_seq>-<to_seq>
 1. 当前摘要正文及其既有 coverage；
 2. 新进入中间区域、且 `seq` 大于既有 `to_seq` 的 canonical messages。
 
-新摘要替换旧摘要，`from_seq` 保持不变，`to_seq` 扩大到当前中间区域末尾。已经被旧摘要覆盖的原始消息不得再次发送。若现有摘要元数据与当前 Session 或中间范围冲突，直接失败，不猜测 coverage、不回退为全量重摘要。
+新摘要替换旧摘要，`from_seq` 保持不变，`to_seq` 扩大到当前中间区域末尾。已经被旧摘要覆盖的原始消息不得再次发送。
 
 ### 5. 原文精确回查
 

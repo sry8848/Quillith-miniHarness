@@ -69,6 +69,13 @@ public final class InteractiveRunner {
             }
 
             // 3. Session 命令只读取或恢复本地状态，不作为模型输入。
+            if ("/compact".equalsIgnoreCase(command)) {
+                boolean compacted = agentSession.compact();
+                System.out.println(compacted ? "[Context：压缩完成]"
+                        : "[Context：当前没有新增的可压缩中间 Turn]");
+                continue;
+            }
+
             if ("/session".equalsIgnoreCase(command)) {
                 printSessions(agentSession);
                 continue;

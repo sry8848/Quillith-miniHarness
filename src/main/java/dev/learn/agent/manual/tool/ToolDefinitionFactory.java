@@ -61,4 +61,9 @@ public final class ToolDefinitionFactory {
                 )
         );
     }
+
+    /** 定义允许 seq=0 的非负整数参数。 */
+    public static JsonValue nonNegativeIntegerProperty(String description) {
+        return JsonValue.from(Map.of("type", "integer", "minimum", 0, "description", description));
+    }
 }

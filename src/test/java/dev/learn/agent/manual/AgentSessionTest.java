@@ -12,6 +12,8 @@ import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.cli.ExecRunner;
 import dev.learn.agent.manual.cli.InteractiveRunner;
 import dev.learn.agent.manual.context.ContextManager;
+import dev.learn.agent.manual.context.ConversationCompactor;
+import java.util.Optional;
 import dev.learn.agent.manual.hook.AgentHook;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
@@ -47,6 +49,7 @@ import java.util.List;
 import java.util.Scanner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -691,6 +694,45 @@ class AgentSessionTest {
         }
     }
 
+    /** 手动命令只生成摘要，恢复后下一条请求使用 Checkpoint。 */
+    @Test
+    void compactCommandAndResumeKeepCanonicalHistory() throws Exception {
+        try (AgentSessionFixture fixture = new AgentSessionFixture(workspace, new HookRegistry(),
+                List.of(ProviderResponse.summary(), ProviderResponse.finalText()))) {
+            assertFalse(fixture.agentSession().compact());
+            for (int i = 0; i < 9; i++) fixture.agentSession().submitRecorded("turn-" + i, "answer-" + i);
+            var before = fixture.sessionStore().loadSession(fixture.agentSession().sessionId(), workspace.toString());
+            new InteractiveRunner(new Scanner("/compact\nexit\n")).run(fixture.agentSession());
+            var compacted = fixture.sessionStore().loadSession(fixture.agentSession().sessionId(), workspace.toString());
+            assertEquals(before.messages(), compacted.messages());
+            assertEquals(17, compacted.checkpoint().throughSeq());
+            assertTrue(compacted.checkpoint().context().get(6).content().asString().contains("coverage: 6-7"));
+            assertFalse(fixture.agentSession().compact());
+            assertEquals(1, fixture.requestBodies().size());
+            fixture.agentSession().resume(fixture.agentSession().sessionId());
+            fixture.agentSession().submit("next");
+            assertTrue(fixture.requestBodies().get(1).contains("previous-summary"));
+            assertEquals(20, fixture.sessionStore().loadSession(
+                    fixture.agentSession().sessionId(), workspace.toString()).messages().size());
+        }
+    }
+
+    /** 第九个 Turn 使已很长的会话首次出现中间区，在主请求前自动压缩。 */
+    @Test
+    void automaticallyCompactsBeforeParentRequest() throws Exception {
+        try (AgentSessionFixture fixture = new AgentSessionFixture(workspace, new HookRegistry(),
+                List.of(ProviderResponse.summary(), ProviderResponse.finalText()))) {
+            for (int i = 0; i < 8; i++) {
+                fixture.agentSession().submitRecorded("turn-" + i + "x".repeat(7_000), "answer");
+            }
+            fixture.agentSession().submit("ninth");
+            assertEquals(2, fixture.requestBodies().size());
+            assertTrue(fixture.requestBodies().get(1).contains("coverage: 6-7"));
+            assertEquals(18, fixture.sessionStore().loadSession(
+                    fixture.agentSession().sessionId(), workspace.toString()).messages().size());
+        }
+    }
+
     private static final class AgentSessionFixture
             implements AutoCloseable {
 
@@ -782,6 +824,7 @@ class AgentSessionTest {
                             "test-model",
                             paths
                     );
+            ConversationCompactor compactor = new ConversationCompactor(client, "test-model", sessionStore, sessionState);
             AgentLoop agentLoop =
                     new AgentLoop(
                             client,
@@ -797,11 +840,7 @@ class AgentSessionTest {
                                     null
                             ),
                             hookRegistry,
-                            new ContextManager(
-                                    client,
-                                    "test-model",
-                                    paths
-                            ),
+                            new ContextManager(paths),
                             new StreamOutputPrinter(
                                     new PrintStream(
                                             new ByteArrayOutputStream(),
@@ -814,7 +853,8 @@ class AgentSessionTest {
                             new ModelRequestRecoveryManager(
                                     List.of()
                             ),
-                            new SessionTurnJournal(sessionStore, sessionState)
+                            new SessionTurnJournal(sessionStore, sessionState),
+                            Optional.of(compactor)
                     );
             agentSession =
                     new AgentSession(
@@ -824,7 +864,8 @@ class AgentSessionTest {
                             systemPromptManager,
                             sessionState,
                             sessionStore,
-                            new ConversationState()
+                            new ConversationState(),
+                            compactor
                     );
         }
 
@@ -858,6 +899,15 @@ class AgentSessionTest {
             String contentType,
             String body
     ) {
+
+        /** 返回非流式摘要，用于与主 Agent SSE 请求区分。 */
+        private static ProviderResponse summary() {
+            return new ProviderResponse(200, "application/json", """
+                    {"id":"summary","type":"message","role":"assistant","model":"test-model",
+                    "content":[{"type":"text","text":"[消息 6-7] previous-summary"}],
+                    "stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":10}}
+                    """);
+        }
 
         private static ProviderResponse finalText() {
             return new ProviderResponse(

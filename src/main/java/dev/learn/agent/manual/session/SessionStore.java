@@ -387,13 +387,52 @@ public final class SessionStore implements AutoCloseable {
     }
 
     private List<MessageParam> readMessages(Connection connection, String sessionId) throws SQLException {
-        List<MessageParam> messages = new ArrayList<>();
+        return readSessionMessages(connection, sessionId, 0, Long.MAX_VALUE).stream()
+                .map(SessionMessage::message).toList();
+    }
+
+    /** 查询当前工作区 Session 的全部 canonical 消息，返回带序号的原文。 */
+    public synchronized List<SessionMessage> listSessionMessages(String sessionId, String workspace) {
+        return getSessionMessages(sessionId, workspace, 0, Long.MAX_VALUE);
+    }
+
+    /**
+     * 查询闭区间中的 canonical 消息，不修改 Session 更新时间。
+     * @param sessionId 持久化 Session ID
+     * @param workspace 调用方工作区
+     * @param fromSeq 起始序号（包含）
+     * @param toSeq 结束序号（包含）
+     * @return 按 seq 升序排列的原始消息
+     */
+    public synchronized List<SessionMessage> getSessionMessages(
+            String sessionId, String workspace, long fromSeq, long toSeq) {
+        // 1. 范围来自工具外部输入，拒绝非法区间。
+        if (fromSeq < 0 || toSeq < fromSeq) {
+            throw new IllegalArgumentException("消息范围必须满足 0 <= from_seq <= to_seq");
+        }
+        return inTransaction(connection -> {
+            // 2. 与 resume 使用同一工作区访问边界。
+            if (!readWorkspace(connection, sessionId).equals(workspace)) {
+                throw new IllegalArgumentException("Session 不属于当前 workspace：" + sessionId);
+            }
+            return readSessionMessages(connection, sessionId, fromSeq, toSeq);
+        });
+    }
+
+    /** 在当前事务内读取指定闭区间，保留协议 JSON 和两个序号。 */
+    private List<SessionMessage> readSessionMessages(
+            Connection connection, String sessionId, long fromSeq, long toSeq) throws SQLException {
+        List<SessionMessage> messages = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT message_json FROM messages WHERE session_id = ? ORDER BY seq")) {
+                "SELECT seq, turn_seq, message_json FROM messages "
+                        + "WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq")) {
             statement.setString(1, sessionId);
+            statement.setLong(2, fromSeq);
+            statement.setLong(3, toSeq);
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
-                    messages.add(readJson(rows.getString(1), MessageParam.class));
+                    messages.add(new SessionMessage(rows.getLong(1), rows.getLong(2),
+                            readJson(rows.getString(3), MessageParam.class)));
                 }
             }
         }
@@ -553,6 +592,10 @@ public final class SessionStore implements AutoCloseable {
     @FunctionalInterface
     private interface SqlOperation<T> {
         T apply(Connection connection) throws SQLException;
+    }
+
+    /** 带 canonical 消息序号和用户 Turn 序号的只读查询结果。 */
+    public record SessionMessage(long seq, long turnSeq, MessageParam message) {
     }
 
     /** 已持久化的 Context Checkpoint。 */

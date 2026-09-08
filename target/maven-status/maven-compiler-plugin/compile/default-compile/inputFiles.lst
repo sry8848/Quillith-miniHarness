@@ -7,6 +7,7 @@ D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manu
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\cli\HarborRunner.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\cli\InteractiveRunner.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\context\ContextManager.java
+D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\context\ConversationCompactor.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\hook\AgentHook.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\hook\HookEffect.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\hook\HookRegistry.java
@@ -86,6 +87,7 @@ D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manu
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\CompleteTaskTool.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\CreateTaskTool.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\EditFileTool.java
+D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\GetSessionMessagesTool.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\GetTaskTool.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\GlobTool.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\main\java\dev\learn\agent\manual\tool\tools\ListTasksTool.java

@@ -27,6 +27,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
+import dev.learn.agent.manual.context.ConversationCompactor;
+import java.util.Optional;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
@@ -143,9 +145,10 @@ public final class AgentLoop {
     // 保存模型调用和工具调用生命周期中的 Hook 注册表。
     private final HookRegistry hookRegistry;
 
-    // 保存四层上下文治理共用的管理器。
-    // 设计意图：共用同一个管理器，保证工具结果文件、会话摘要和压缩策略属于同一次应用会话。
+    // 保存父子 Loop 共用的 ToolResult 字符预算与文件落盘管理器。
     private final ContextManager contextManager;
+    // 仅持久化父会话装配压缩能力。
+    private final Optional<ConversationCompactor> conversationCompactor;
 
     // 保存模型流、工具调用和工具结果共用的输出观察边界。
     // 设计意图：父 Agent 和子 Agent 通过不同打印器实现不同终端策略，但保留同一解析流程。
@@ -195,7 +198,7 @@ public final class AgentLoop {
     ) {
         this(client, model, systemPromptManager, sessionState, toolRegistry, approvalGate,
                 hookRegistry, contextManager, outputPrinter, backgroundScheduler,
-                maxModelRounds, recoveryManager, new NoOpTurnJournal());
+                maxModelRounds, recoveryManager, new NoOpTurnJournal(), Optional.empty());
     }
 
     /**
@@ -214,7 +217,8 @@ public final class AgentLoop {
             BackgroundTaskScheduler backgroundScheduler,
             int maxModelRounds,
             ModelRequestRecoveryManager recoveryManager,
-            TurnJournal turnJournal
+            TurnJournal turnJournal,
+            Optional<ConversationCompactor> conversationCompactor
     ) {
         // 校验并保存模型客户端。
         this.client =
@@ -307,6 +311,7 @@ public final class AgentLoop {
                 );
 
         this.turnJournal = Objects.requireNonNull(turnJournal, "turnJournal 不能为空");
+        this.conversationCompactor = conversationCompactor;
     }
 
     /**
@@ -480,39 +485,12 @@ public final class AgentLoop {
                 );
             }
 
-            // 执行 L1 中段裁剪，得到本次请求使用的消息副本。
-            // 设计意图：先按数量缩小历史，同时保护会话目标、最近消息和工具协议边界。
-            List<MessageParam> requestMessages =
-                    contextManager.snipMiddle(
-                            messages
-                    );
-
-            // 执行 L2 旧工具结果压缩。
-            // 设计意图：L1 先缩小扫描范围，L2 只处理仍留在活跃上下文中的旧工具结果。
-            requestMessages =
-                    contextManager.compactOldToolResults(
-                            requestMessages
-                    );
-
-            // 在本地压缩后仍超出阈值时执行 L4 模型摘要。
-            // 设计意图：优先使用零 API 成本的压缩，避免每轮摘要带来的延迟和模型调用费用。
-            if (contextManager.shouldAutoCompact(
-                    requestMessages
-            )) {
-                requestMessages =
-                        contextManager.compactHistory(
-                                requestMessages,
-                                ""
-                        );
-            }
-
-            // 只有上下文治理实际改变消息时才新增 Checkpoint，避免无意义快照。
-            if (!requestMessages.equals(messages)) {
-                conversationState.replaceModelContext(
-                        requestMessages,
-                        conversationState.latestSequence()
-                );
-                turnJournal.saveContextCheckpoint(conversationState);
+            // 1. 自动入口只判断阈值，完整压缩提交交给共享 Compactor。
+            if (conversationCompactor.isPresent()) {
+                ConversationCompactor compactor = conversationCompactor.get();
+                if (compactor.shouldAutoCompact(messages)) {
+                    compactor.compact(conversationState);
+                }
             }
 
             // 7. recorded Turn 在真实请求前治理完成后提交固定 assistant。

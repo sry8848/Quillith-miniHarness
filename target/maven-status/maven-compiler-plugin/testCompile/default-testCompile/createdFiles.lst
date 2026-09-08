@@ -22,10 +22,12 @@ dev\learn\agent\manual\SessionStateTest.class
 dev\learn\agent\manual\AgentSessionTest$1.class
 dev\learn\agent\manual\AgentSessionTest.class
 dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest$CountingTool.class
-dev\learn\agent\manual\context\ContextManagerTest.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryManagerTest.class
+dev\learn\agent\manual\tool\tools\GetSessionMessagesToolTest.class
 dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest$AgentFixture.class
 dev\learn\agent\manual\tool\ToolRegistryRetryTest.class
 dev\learn\agent\manual\task\TaskSystemTest.class
+dev\learn\agent\manual\context\ConversationCompactorTest.class
 dev\learn\agent\manual\memory\MemoryConsolidationProbe.class
 dev\learn\agent\manual\cli\HarborRunnerTest.class
+dev\learn\agent\manual\context\ConversationCompactorTest$Fixture.class

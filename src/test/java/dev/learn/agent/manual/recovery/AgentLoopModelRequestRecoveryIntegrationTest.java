@@ -52,6 +52,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class AgentLoopModelRequestRecoveryIntegrationTest {
 
+    /** 无持久化压缩能力的子 Loop 在长输入下仍只发主模型请求。 */
+    @Test
+    void subagentDoesNotCompactLongHistory() throws Exception {
+        try (AgentFixture fixture = new AgentFixture(workspace, List.of(ProviderResponse.finalText()))) {
+            var messages = fixture.userMessages();
+            messages.add(MessageParam.builder().role(MessageParam.Role.USER).content("x".repeat(60_000)).build());
+            assertEquals("done", fixture.agentLoop().run(messages, ""));
+            assertEquals(1, fixture.requestBodies().size());
+            assertTrue(fixture.requestBodies().getFirst().contains("x".repeat(60_000)));
+        }
+    }
+
     // JUnit 为 ContextManager 提供不污染仓库的真实工作区。
     @TempDir
     Path workspace;
@@ -415,11 +427,7 @@ class AgentLoopModelRequestRecoveryIntegrationTest {
                             sessionState
                     );
             ContextManager contextManager =
-                    new ContextManager(
-                            client,
-                            "test-model",
-                            paths
-                    );
+                    new ContextManager(paths);
             ToolApprovalGate approvalGate =
                     new ToolApprovalGate(
                             new DefaultToolApprovalPolicy(

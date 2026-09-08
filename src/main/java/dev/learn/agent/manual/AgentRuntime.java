@@ -4,6 +4,9 @@ import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
 import dev.learn.agent.manual.context.ContextManager;
+import dev.learn.agent.manual.context.ConversationCompactor;
+import dev.learn.agent.manual.tool.tools.GetSessionMessagesTool;
+import java.util.Optional;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.hook.hooks.BackgroundTaskHook;
 import dev.learn.agent.manual.hook.hooks.LargeOutputHook;
@@ -262,6 +265,7 @@ public final class AgentRuntime implements AutoCloseable {
                         toolRetryPolicy
                 );
         toolRegistry.registerAll(
+                new GetSessionMessagesTool(sessionStore, sessionState),
                 parentBashTool,
                 readFileTool,
                 writeFileTool,
@@ -391,11 +395,9 @@ public final class AgentRuntime implements AutoCloseable {
                         paths
                 );
         ContextManager contextManager =
-                new ContextManager(
-                        client,
-                        model,
-                        paths
-                );
+                new ContextManager(paths);
+        ConversationCompactor conversationCompactor =
+                new ConversationCompactor(client, model, sessionStore, sessionState);
         ModelRequestRecoveryManager recoveryManager =
                 new ModelRequestRecoveryManager(
                         List.of(
@@ -438,7 +440,8 @@ public final class AgentRuntime implements AutoCloseable {
                         subagentBackgroundScheduler,
                         MAX_SUBAGENT_MODEL_ROUNDS,
                         recoveryManager,
-                        new NoOpTurnJournal()
+                        new NoOpTurnJournal(),
+                        Optional.empty()
                 );
 
         toolRegistry.register(
@@ -485,7 +488,8 @@ public final class AgentRuntime implements AutoCloseable {
                         parentBackgroundScheduler,
                         MAX_PARENT_MODEL_ROUNDS,
                         recoveryManager,
-                        new SessionTurnJournal(sessionStore, sessionState)
+                        new SessionTurnJournal(sessionStore, sessionState),
+                        Optional.of(conversationCompactor)
                 );
         AgentSession agentSession =
                 new AgentSession(
@@ -495,7 +499,8 @@ public final class AgentRuntime implements AutoCloseable {
                         parentSystemPromptManager,
                         sessionState,
                         sessionStore,
-                        new ConversationState()
+                        new ConversationState(),
+                        conversationCompactor
                 );
 
         return new AgentRuntime(

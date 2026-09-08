@@ -30,6 +30,7 @@ dev\learn\agent\manual\tool\entity\TodoStatus.class
 dev\learn\agent\manual\session\SessionStore.class
 dev\learn\agent\manual\hook\hooks\TodoReminderHook$1.class
 dev\learn\agent\manual\cli\HarborRunner$RequestType.class
+dev\learn\agent\manual\context\ConversationCompactor.class
 dev\learn\agent\manual\skill\SkillDefinition.class
 dev\learn\agent\manual\hook\HookRegistry.class
 dev\learn\agent\manual\session\ConversationState.class
@@ -87,10 +88,12 @@ dev\learn\agent\manual\systemprompt\WorkspaceSystemPromptProvider.class
 dev\learn\agent\manual\tool\ToolExecutionScheduler.class
 dev\learn\agent\manual\task\TaskStatus.class
 dev\learn\agent\manual\output\StreamOutputPrinter.class
+dev\learn\agent\manual\tool\tools\GetSessionMessagesTool.class
 dev\learn\agent\manual\hook\hooks\WorkspaceLoggingHook.class
 dev\learn\agent\manual\tool\approval\ToolApprovalMode.class
 dev\learn\agent\manual\tool\ToolExecutionResult.class
 dev\learn\agent\manual\session\SessionStore$SqlOperation.class
+dev\learn\agent\manual\session\SessionStore$SessionMessage.class
 dev\learn\agent\manual\ManualAgentApplication$1.class
 dev\learn\agent\manual\memory\MemoryBatch.class
 dev\learn\agent\manual\tool\approval\ToolApprovalGate.class
