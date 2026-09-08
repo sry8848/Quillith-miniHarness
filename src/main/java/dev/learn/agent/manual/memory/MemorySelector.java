@@ -4,9 +4,12 @@ package dev.learn.agent.manual.memory;
 // 引入模型客户端、消息协议和 SDK JSON 解析器。
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.core.ObjectMappers;
+import com.anthropic.core.http.StreamResponse;
+import com.anthropic.helpers.MessageAccumulator;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.StopReason;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -167,22 +170,35 @@ public final class MemorySelector {
          *
          * Selector 只做相关性判断，不允许演变成另一条 AgentLoop。
          */
+        MessageAccumulator accumulator =
+                MessageAccumulator.create();
+
+        try (StreamResponse<RawMessageStreamEvent> stream =
+                     client.messages()
+                             .createStreaming(
+                                     MessageCreateParams.builder()
+                                             .model(model)
+                                             .maxTokens(
+                                                     MAX_OUTPUT_TOKENS
+                                             )
+                                             .system(
+                                                     SYSTEM_PROMPT
+                                             )
+                                             .addUserMessage(
+                                                     prompt
+                                             )
+                                             .build()
+                             )) {
+            // 1. 消费完整 SSE 流中的全部事件。
+            // 使用 SDK 累加器保持原有 Message 解析语义，不自行维护 SSE 状态机。
+            stream.stream()
+                    .forEach(
+                            accumulator::accumulate
+                    );
+        }
+
         Message response =
-                client.messages()
-                        .create(
-                                MessageCreateParams.builder()
-                                        .model(model)
-                                        .maxTokens(
-                                                MAX_OUTPUT_TOKENS
-                                        )
-                                        .system(
-                                                SYSTEM_PROMPT
-                                        )
-                                        .addUserMessage(
-                                                prompt
-                                        )
-                                        .build()
-                        );
+                accumulator.message();
 
         // 记录 Selector 模型调用的标准模型、响应和 Token 属性。
         GenAiSpanAttributes.recordCompletedMessage(

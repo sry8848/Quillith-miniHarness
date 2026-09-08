@@ -18,6 +18,8 @@ import dev.learn.agent.manual.session.SessionStore;
 import dev.learn.agent.manual.telemetry.GenAiSpanAttributes;
 import dev.learn.agent.manual.tool.ToolExecutionResult;
 import io.opentelemetry.instrumentation.annotations.WithSpan;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -28,6 +30,11 @@ import java.util.Objects;
  * 持有父 Agent 的会话历史，并编排一条用户消息的完整 Turn 生命周期。
  */
 public final class AgentSession {
+
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(
+                    AgentSession.class
+            );
 
     private final AgentLoop agentLoop;
     private final MemoryRuntime memoryRuntime;
@@ -106,7 +113,7 @@ public final class AgentSession {
      *
      * @param query 用户输入
      * @return 当前 Turn 的最终 assistant 文本；输入被 Hook 阻止时为空字符串
-     * @throws IOException 记忆读取或写入失败
+     * @throws IOException 回答前的记忆召回读取失败
      * @throws AnthropicServiceException Provider Error 无法恢复时，在诊断后抛出
      */
     public String submit(
@@ -124,7 +131,7 @@ public final class AgentSession {
      * @param userText 固定历史中的 user 文本
      * @param assistantText 固定历史中的 assistant 文本
      * @return 已经提交的固定 assistant 文本；输入被 Hook 阻止时为空字符串
-     * @throws IOException 记忆读取或写入失败
+     * @throws IOException 回答前的记忆召回读取失败
      */
     public String submitRecorded(
             String userText,
@@ -146,7 +153,7 @@ public final class AgentSession {
      * @param query 用户输入
      * @param recordedAssistant 固定 assistant；{@code null} 表示调用真实模型
      * @return 当前 Turn 的最终 assistant 文本；输入被 Hook 阻止时为空字符串
-     * @throws IOException 记忆读取或写入失败
+     * @throws IOException 回答前的记忆召回读取失败
      */
     @WithSpan("agent.turn")
     private String submitInternal(
@@ -266,26 +273,40 @@ public final class AgentSession {
             throw exception;
         }
 
-        // 10. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
-        MemoryTurnResult memoryTurnResult =
-                memoryRuntime.completeTurn(
-                        memoryExtractionSnapshot
-                );
+        try {
+            // 10. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
+            MemoryTurnResult memoryTurnResult =
+                    memoryRuntime.completeTurn(
+                            memoryExtractionSnapshot
+                    );
 
-        if (memoryTurnResult.savedCount() > 0) {
-            System.out.println(
-                    "[Memory：已保存 "
-                            + memoryTurnResult.savedCount()
-                            + " 条记忆]"
-            );
-
-            if (memoryTurnResult.consolidatedCount() > 0) {
+            if (memoryTurnResult.savedCount() > 0) {
                 System.out.println(
-                        "[Memory：整理后保留 "
-                                + memoryTurnResult.consolidatedCount()
+                        "[Memory：已保存 "
+                                + memoryTurnResult.savedCount()
                                 + " 条记忆]"
                 );
+
+                if (memoryTurnResult.consolidatedCount() > 0) {
+                    System.out.println(
+                            "[Memory：整理后保留 "
+                                    + memoryTurnResult.consolidatedCount()
+                                    + " 条记忆]"
+                    );
+                }
             }
+        } catch (Exception exception) {
+            // 11. 记录后处理失败并继续返回已经完成的主回答。
+            /*
+             * 记忆提取和整理是回答完成后的辅助写路径。
+             * 它们失败时保留已提交的主回答，避免把成功 Turn 反向判为失败。
+             */
+            LOGGER.warn(
+                    "本轮回答已完成，但记忆后处理失败；"
+                            + "保留主回答并跳过本轮剩余记忆处理。session_id="
+                            + sessionState.sessionId(),
+                    exception
+            );
         }
 
         return output;

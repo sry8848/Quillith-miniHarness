@@ -3,7 +3,10 @@ package dev.learn.agent.manual.memory;
 
 // 引入模型调用及 SDK 结构化响应协议。
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.core.http.StreamResponse;
+import com.anthropic.helpers.MessageAccumulator;
 import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.StopReason;
 import com.anthropic.models.messages.StructuredContentBlock;
 import com.anthropic.models.messages.StructuredMessage;
@@ -206,25 +209,40 @@ public final class MemoryExtractor {
          * 提取请求不携带工具，因此模型只能分析对话，
          * 不能继续执行用户任务或修改工作区。
          */
+        MessageAccumulator accumulator =
+                MessageAccumulator.create();
+
+        try (StreamResponse<RawMessageStreamEvent> stream =
+                     client.messages()
+                             .createStreaming(
+                                     MessageCreateParams.builder()
+                                             .model(model)
+                                             .maxTokens(
+                                                     MAX_OUTPUT_TOKENS
+                                             )
+                                             .system(
+                                                     SYSTEM_PROMPT
+                                             )
+                                             .addUserMessage(
+                                                     prompt
+                                             )
+                                             .outputConfig(
+                                                     MemoryBatch.class
+                                             )
+                                             .build()
+                             )) {
+            // 3. 消费完整 SSE 流中的全部事件。
+            // SDK 累加器继续负责 JSON Schema 结果解析，避免引入第二套协议实现。
+            stream.stream()
+                    .forEach(
+                            accumulator::accumulate
+                    );
+        }
+
         StructuredMessage<MemoryBatch> response =
-                client.messages()
-                        .create(
-                                MessageCreateParams.builder()
-                                        .model(model)
-                                        .maxTokens(
-                                                MAX_OUTPUT_TOKENS
-                                        )
-                                        .system(
-                                                SYSTEM_PROMPT
-                                        )
-                                        .addUserMessage(
-                                                prompt
-                                        )
-                                        .outputConfig(
-                                                MemoryBatch.class
-                                        )
-                                        .build()
-                        );
+                accumulator.message(
+                        MemoryBatch.class
+                );
 
         // 记录提取模型调用的标准模型、响应和 Token 属性。
         GenAiSpanAttributes.recordCompletedMessage(

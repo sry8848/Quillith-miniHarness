@@ -2,8 +2,10 @@ package dev.learn.agent.manual;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.core.ObjectMappers;
 import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.models.messages.MessageParam;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.learn.agent.manual.background.BackgroundTaskScheduler;
@@ -14,6 +16,9 @@ import dev.learn.agent.manual.hook.AgentHook;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.memory.MemoryRuntime;
+import dev.learn.agent.manual.memory.MemoryEntry;
+import dev.learn.agent.manual.memory.MemoryRepository;
+import dev.learn.agent.manual.memory.MemoryType;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.session.ConversationState;
@@ -473,6 +478,77 @@ class AgentSessionTest {
         }
     }
 
+    /** 验证整理请求失败只降级 Memory，不反向破坏已经完成的主回答。 */
+    @Test
+    void keepsCompletedAnswerWhenMemoryConsolidationFails()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.memorySelection(),
+                                     ProviderResponse.finalText(),
+                                     ProviderResponse.structuredMemory(),
+                                     ProviderResponse.providerError()
+                             ),
+                             true
+                     )) {
+            MemoryRepository repository =
+                    new MemoryRepository(
+                            new WorkspacePathResolver(
+                                    fixture.sessionState()
+                            )
+                    );
+
+            // 1. 预置九条记忆，使本轮提取成功后立即触发第十条整理阈值。
+            for (int index = 0; index < 9; index++) {
+                repository.save(
+                        new MemoryEntry(
+                                "existing-memory-" + index,
+                                MemoryType.PROJECT,
+                                "Existing memory " + index,
+                                "Existing body " + index
+                        )
+                );
+            }
+
+            // 2. 召回和提取使用 SSE 成功，整理返回错误时仍交付已完成回答。
+            String answer =
+                    fixture.agentSession()
+                            .submit(
+                                    "I prefer dark mode"
+                            );
+
+            assertEquals(
+                    "done",
+                    answer
+            );
+            assertEquals(
+                    4,
+                    fixture.requestBodies()
+                            .size()
+            );
+
+            // 3. Selector、Extractor 和 Consolidator 三个 Memory 请求都必须启用流式协议。
+            for (int requestIndex : List.of(0, 2, 3)) {
+                assertTrue(
+                        fixture.requestBodies()
+                                .get(requestIndex)
+                                .contains(
+                                        "\"stream\":true"
+                                )
+                );
+            }
+
+            assertEquals(
+                    10,
+                    repository.list()
+                            .size()
+            );
+        }
+    }
+
     /**
      * 验证 ExecRunner 只提交一条任务，并把正常 Turn 映射为退出码 0。
      */
@@ -811,16 +887,17 @@ class AgentSessionTest {
         private static ProviderResponse structuredMemory() {
             return new ProviderResponse(
                     200,
-                    "application/json",
-                    "{\"id\":\"msg-memory\",\"type\":\"message\","
-                            + "\"role\":\"assistant\",\"content\":[{\"type\":\"text\","
-                            + "\"text\":\"{\\\"memories\\\":[{\\\"name\\\":"
-                            + "\\\"user-interface-preference\\\",\\\"type\\\":\\\"user\\\","
-                            + "\\\"description\\\":\\\"User prefers dark mode\\\","
-                            + "\\\"body\\\":\\\"The user prefers dark mode.\\\"}]}\"}],"
-                            + "\"model\":\"test-model\",\"stop_reason\":\"end_turn\","
-                            + "\"stop_sequence\":null,\"usage\":{\"input_tokens\":8,"
-                            + "\"output_tokens\":12}}"
+                    "text/event-stream",
+                    structuredMemoryStream()
+            );
+        }
+
+        /** 返回一次没有相关主题的流式选择结果。 */
+        private static ProviderResponse memorySelection() {
+            return new ProviderResponse(
+                    200,
+                    "text/event-stream",
+                    memorySelectionStream()
             );
         }
     }
@@ -836,6 +913,67 @@ class AgentSessionTest {
                 + "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
                 + "event: message_delta\n"
                 + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+                + "event: message_stop\n"
+                + "data: {\"type\":\"message_stop\"}\n\n";
+    }
+
+    private static String memorySelectionStream() {
+        return textStream(
+                "msg-memory-selection",
+                "[]"
+        );
+    }
+
+    private static String structuredMemoryStream() {
+        return textStream(
+                "msg-memory",
+                "{\"memories\":[{\"name\":\"user-interface-preference\","
+                        + "\"type\":\"user\","
+                        + "\"description\":\"User prefers dark mode\","
+                        + "\"body\":\"The user prefers dark mode.\"}]}"
+        );
+    }
+
+    /** 构造 SDK MessageAccumulator 可以完整识别的文本 SSE。 */
+    private static String textStream(
+            String messageId,
+            String text
+    ) {
+        String encodedText;
+        try {
+            // 1. 使用项目已有 JSON 编码器转义结构化文本，避免测试响应本身损坏协议。
+            encodedText =
+                    ObjectMappers.jsonMapper()
+                            .writeValueAsString(
+                                    text
+                            );
+        } catch (JsonProcessingException exception) {
+            throw new AssertionError(
+                    "无法构造测试 SSE 文本",
+                    exception
+            );
+        }
+
+        return "event: message_start\n"
+                + "data: {\"type\":\"message_start\",\"message\":{\"id\":\""
+                + messageId
+                + "\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],"
+                + "\"model\":\"test-model\",\"stop_reason\":null,\"stop_sequence\":null,"
+                + "\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+                + "event: content_block_start\n"
+                + "data: {\"type\":\"content_block_start\",\"index\":0,"
+                + "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+                + "event: content_block_delta\n"
+                + "data: {\"type\":\"content_block_delta\",\"index\":0,"
+                + "\"delta\":{\"type\":\"text_delta\",\"text\":"
+                + encodedText
+                + "}}\n\n"
+                + "event: content_block_stop\n"
+                + "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+                + "event: message_delta\n"
+                + "data: {\"type\":\"message_delta\","
+                + "\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},"
+                + "\"usage\":{\"output_tokens\":1}}\n\n"
                 + "event: message_stop\n"
                 + "data: {\"type\":\"message_stop\"}\n\n";
     }

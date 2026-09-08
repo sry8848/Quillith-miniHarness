@@ -3,7 +3,10 @@ package dev.learn.agent.manual.memory;
 
 // 引入模型调用及 SDK 结构化响应协议。
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.core.http.StreamResponse;
+import com.anthropic.helpers.MessageAccumulator;
 import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.StopReason;
 import com.anthropic.models.messages.StructuredContentBlock;
 import com.anthropic.models.messages.StructuredMessage;
@@ -196,25 +199,40 @@ public final class MemoryConsolidator {
          * [核心] 请求 SDK 根据 MemoryBatch 生成 Schema，
          * 并把整理结果转换成结构化 Java 对象。
          */
+        MessageAccumulator accumulator =
+                MessageAccumulator.create();
+
+        try (StreamResponse<RawMessageStreamEvent> stream =
+                     client.messages()
+                             .createStreaming(
+                                     MessageCreateParams.builder()
+                                             .model(model)
+                                             .maxTokens(
+                                                     MAX_OUTPUT_TOKENS
+                                             )
+                                             .system(
+                                                     SYSTEM_PROMPT
+                                             )
+                                             .addUserMessage(
+                                                     prompt
+                                             )
+                                             .outputConfig(
+                                                     MemoryBatch.class
+                                             )
+                                             .build()
+                             )) {
+            // 3. 消费完整 SSE 流中的全部事件。
+            // 收到 message_stop 并完成结构化校验后，才允许进入破坏性的替换阶段。
+            stream.stream()
+                    .forEach(
+                            accumulator::accumulate
+                    );
+        }
+
         StructuredMessage<MemoryBatch> response =
-                client.messages()
-                        .create(
-                                MessageCreateParams.builder()
-                                        .model(model)
-                                        .maxTokens(
-                                                MAX_OUTPUT_TOKENS
-                                        )
-                                        .system(
-                                                SYSTEM_PROMPT
-                                        )
-                                        .addUserMessage(
-                                                prompt
-                                        )
-                                        .outputConfig(
-                                                MemoryBatch.class
-                                        )
-                                        .build()
-                        );
+                accumulator.message(
+                        MemoryBatch.class
+                );
 
         // 记录整理模型调用的标准模型、响应和 Token 属性。
         GenAiSpanAttributes.recordCompletedMessage(
@@ -282,7 +300,7 @@ public final class MemoryConsolidator {
                         previous.size()
                 );
 
-        // 3. 只记录已经完成整批校验的整理结果 ID，不记录正文。
+        // 4. 只记录已经完成整批校验的整理结果 ID，不记录正文。
         GenAiSpanAttributes.recordMemoryRecords(
                 consolidated.stream()
                         .map(MemoryEntry::name)
