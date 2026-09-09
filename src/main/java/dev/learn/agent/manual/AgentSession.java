@@ -10,7 +10,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.memory.MemoryRuntime;
-import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.systemprompt.RefreshScope;
 import dev.learn.agent.manual.systemprompt.SystemPromptManager;
 import dev.learn.agent.manual.session.ConversationState;
@@ -234,13 +233,7 @@ public final class AgentSession {
             conversationState.appendCommitted(hookMessage);
         }
 
-        // 7. AgentLoop 可能压缩 history，因此先保存 Memory complete 使用的文本视图。
-        List<MessageParam> memoryExtractionSnapshot =
-                memoryRuntime.capture(
-                        conversationState.messages()
-                );
-
-        // 8. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
+        // 7. 核心 Model/Tool 循环保持不变，AgentSession 只处理 Turn 外层行为。
         String output;
         try {
             output = recordedAssistant == null
@@ -254,7 +247,7 @@ public final class AgentSession {
                     recordedAssistant
             );
         } catch (AnthropicServiceException exception) {
-            // 9. Provider 失败只终止本次执行，已经 durable 的 Session 事实保持不变。
+            // 8. Provider 失败只终止本次执行，已经 durable 的 Session 事实保持不变。
             printProviderError(
                     exception
             );
@@ -262,36 +255,24 @@ public final class AgentSession {
         }
 
         try {
-            // 10. 只有 AgentLoop 正常返回后才提取并持久化本轮记忆。
-            MemoryTurnResult memoryTurnResult =
-                    memoryRuntime.completeTurn(
-                            memoryExtractionSnapshot
-                    );
-
-            if (memoryTurnResult.savedCount() > 0) {
-                System.out.println(
-                        "[Memory：已保存 "
-                                + memoryTurnResult.savedCount()
-                                + " 条记忆]"
-                );
-
-                if (memoryTurnResult.consolidatedCount() > 0) {
-                    System.out.println(
-                            "[Memory：整理后保留 "
-                                    + memoryTurnResult.consolidatedCount()
-                                    + " 条记忆]"
-                    );
-                }
-            }
+            // 9. AgentLoop 正常返回后，读取本轮完整消息并仅将提取工作写入后台队列。
+            memoryRuntime.enqueue(
+                    sessionStore.listTurnMessages(
+                            sessionState.sessionId(),
+                            sessionState.workspace().toString(),
+                            turnSeq
+                    ),
+                    conversationState.modelContext()
+            );
         } catch (Exception exception) {
-            // 11. 记录后处理失败并继续返回已经完成的主回答。
+            // 10. 入队失败不影响已完成主回答；后台失败会保留其已持久化工作自行重试。
             /*
              * 记忆提取和整理是回答完成后的辅助写路径。
              * 它们失败时保留已提交的主回答，避免把成功 Turn 反向判为失败。
              */
             LOGGER.warn(
                     "本轮回答已完成，但记忆后处理失败；"
-                            + "保留主回答并跳过本轮剩余记忆处理。session_id="
+                            + "保留主回答。session_id="
                             + sessionState.sessionId(),
                     exception
             );
@@ -346,9 +327,7 @@ public final class AgentSession {
     public void setMemoryEnabled(
             boolean enabled
     ) {
-        sessionState.setMemoryEnabled(
-                enabled
-        );
+        memoryRuntime.setEnabled(enabled);
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
                 sessionState

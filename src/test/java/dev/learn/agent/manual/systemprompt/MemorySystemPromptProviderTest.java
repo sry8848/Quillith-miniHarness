@@ -6,7 +6,6 @@ import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.memory.MemoryEntry;
 import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemoryRuntime;
-import dev.learn.agent.manual.memory.MemoryTurnResult;
 import dev.learn.agent.manual.memory.MemoryType;
 import dev.learn.agent.manual.session.SessionStore;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
@@ -358,18 +357,8 @@ class MemorySystemPromptProviderTest {
                             "query"
                     )
             );
-            assertEquals(
-                    List.of(),
-                    runtime.capture(
-                            List.of()
-                    )
-            );
-            assertEquals(
-                    MemoryTurnResult.NONE,
-                    runtime.completeTurn(
-                            List.of()
-                    )
-            );
+            runtime.enqueue(List.of(), List.of());
+            runtime.close();
         } finally {
             client.close();
         }

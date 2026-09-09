@@ -4,12 +4,11 @@ import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.MessageParam;
 import dev.learn.agent.manual.SessionState;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
-import io.opentelemetry.instrumentation.annotations.WithSpan;
-
 import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * 统一管理一次应用会话中的记忆能力，并消费 SessionState 中的开关状态。
@@ -17,7 +16,7 @@ import java.util.Optional;
  * 记忆 Provider、按需召回、回合结束提取和整理都通过这里判断是否启用，
  * 避免应用入口在多个阶段重复维护同一个开关。
  */
-public final class MemoryRuntime {
+public final class MemoryRuntime implements AutoCloseable {
 
     // 当前 CLI Session 的记忆开关由 SessionState 唯一持有。
     private final SessionState sessionState;
@@ -27,6 +26,8 @@ public final class MemoryRuntime {
     private final MemoryRecallService recallService;
     private final MemoryExtractor extractor;
     private final MemoryConsolidator consolidator;
+    private final MemoryWorkStore workStore;
+    private final MemoryBackgroundProcessor backgroundProcessor;
 
     /**
      * 创建记忆运行时。
@@ -76,6 +77,15 @@ public final class MemoryRuntime {
                         model,
                         repository
                 );
+
+        try {
+            this.workStore = new MemoryWorkStore(sessionState.agentHome());
+        } catch (IOException exception) {
+            throw new IllegalStateException("无法初始化记忆后台工作库", exception);
+        }
+        this.backgroundProcessor = new MemoryBackgroundProcessor(workStore, extractor, repository,
+                consolidator, sessionState::memoryEnabled);
+        backgroundProcessor.start();
     }
 
     /**
@@ -130,75 +140,34 @@ public final class MemoryRuntime {
     }
 
     /**
-     * 保存供回合结束提取使用的原始历史快照。
+     * 持久化本轮记忆提取工作并唤醒后台线程。
      *
-     * @param history 当前 Agent 历史
-     * @return 记忆开启时的不可变快照；关闭时为空列表
+     * @param turnContext 当前 Turn 的已提交消息
+     * @param modelContext 当前模型实际使用的压缩上下文
      */
-    public List<MessageParam> capture(
-            List<MessageParam> history
-    ) {
-        Objects.requireNonNull(
-                history,
-                "history 不能为 null"
-        );
-
+    public void enqueue(List<MessageParam> turnContext, List<MessageParam> modelContext) {
+        Objects.requireNonNull(turnContext, "turnContext 不能为 null");
+        Objects.requireNonNull(modelContext, "modelContext 不能为 null");
         if (!sessionState.memoryEnabled()) {
-            return List.of();
+            return;
         }
 
-        return List.copyOf(
-                history
-        );
+        // 1. 先 durable 再唤醒，进程退出也不会丢失已完成回答对应的提取工作。
+        workStore.enqueue(new MemoryExtractionTask(UUID.randomUUID().toString(), turnContext, modelContext));
+        backgroundProcessor.wake();
     }
 
-    /**
-     * 在用户回合完成后执行提取、保存和必要的整理。
-     *
-     * @param snapshot 回合开始前保存的历史快照
-     * @return 本回合记忆处理结果
-     * @throws IOException 记忆文件读写失败
-     */
-    @WithSpan("memory.complete_turn")
-    public MemoryTurnResult completeTurn(
-            List<MessageParam> snapshot
-    ) throws IOException {
-        Objects.requireNonNull(
-                snapshot,
-                "记忆快照不能为 null"
-        );
-
-        if (!sessionState.memoryEnabled()) {
-            return MemoryTurnResult.NONE;
+    /** 更新记忆开关；重新启用时恢复队列消费。 */
+    public void setEnabled(boolean enabled) {
+        sessionState.setMemoryEnabled(enabled);
+        if (enabled) {
+            backgroundProcessor.wake();
         }
+    }
 
-        String dialogue =
-                MemoryDialogueFormatter.format(
-                        snapshot
-                );
-
-        List<MemoryEntry> extracted =
-                extractor.extract(
-                        dialogue,
-                        repository.list()
-                );
-
-        for (MemoryEntry entry : extracted) {
-            repository.save(
-                    entry
-            );
-        }
-
-        if (extracted.isEmpty()) {
-            return MemoryTurnResult.NONE;
-        }
-
-        List<MemoryEntry> consolidated =
-                consolidator.consolidateIfNeeded();
-
-        return new MemoryTurnResult(
-                extracted.size(),
-                consolidated.size()
-        );
+    /** 关闭后台执行器，不删除已持久化工作。 */
+    @Override
+    public void close() {
+        backgroundProcessor.close();
     }
 }

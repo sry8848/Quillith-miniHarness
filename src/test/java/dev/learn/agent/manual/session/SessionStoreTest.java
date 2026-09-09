@@ -64,6 +64,23 @@ class SessionStoreTest {
         assertEquals(1, store.nextTurnSequence("session-1"));
     }
 
+    /** 验证后台提取只读取当前 Turn 的 canonical 消息。 */
+    @Test
+    void readsMessagesForOneCommittedTurn() throws Exception {
+        SessionStore store = new SessionStore(agentHome);
+        MessageParam first = user("first request");
+        MessageParam reminder = user("<system-reminder>remember this</system-reminder>");
+        MessageParam second = user("second request");
+
+        // 1. 同一 Turn 的隐藏提醒与普通消息都必须完整返回。
+        store.createSessionWithFirstMessage("session-1", "workspace", 0, first);
+        store.appendCommitted("session-1", 0, List.of(reminder));
+        store.appendCommitted("session-1", 1, List.of(second));
+
+        assertEquals(List.of(first, reminder), store.listTurnMessages("session-1", "workspace", 0));
+        assertEquals(List.of(second), store.listTurnMessages("session-1", "workspace", 1));
+    }
+
     /** 构造普通用户消息。 */
     private static MessageParam user(String text) {
         return MessageParam.builder()

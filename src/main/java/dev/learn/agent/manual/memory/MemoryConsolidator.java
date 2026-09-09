@@ -30,14 +30,6 @@ import java.util.Set;
 public final class MemoryConsolidator {
 
     /*
-     * 记忆数量达到该软阈值后才值得增加一次模型调用。
-     *
-     * 该值只用于教学演示，不代表经过性能或质量评测的最优阈值。
-     */
-    private static final int CONSOLIDATE_THRESHOLD =
-            10;
-
-    /*
      * 教学版只允许模型在能够看到完整记忆集合时执行全量替换。
      *
      * 超过该预算会明确失败，不截断后继续删除模型没有看到的记忆。
@@ -125,31 +117,25 @@ public final class MemoryConsolidator {
     }
 
     /**
-     * 在记忆数量达到阈值后执行一次全量整理。
+     * 对当前全部记忆执行一次全量整理。
      *
-     * @return 整理后保存的不可修改记忆列表；未达到阈值时为空列表
+     * @return 整理后保存的不可修改记忆列表
      * @throws IOException 读取、保存或删除主题记忆失败
      * @throws IllegalStateException 输入超出预算，或者模型结果违反整理契约
      */
     @WithSpan("memory.consolidate")
-    public List<MemoryEntry> consolidateIfNeeded()
+    public List<MemoryEntry> consolidate()
             throws IOException {
         // [核心] 读取本次整理使用的完整旧记忆快照。
         List<MemoryEntry> previous =
                 repository.list();
 
-        // 1. 先记录 Quillith 判断整理阈值所使用的原始数量。
+        // 1. 记录本次全量整理看到的原始数量。
         GenAiSpanAttributes.recordMemoryBeforeConsolidation(
                 previous.size()
         );
 
-        // 记忆较少时不增加额外模型调用。
-        if (previous.size()
-                < CONSOLIDATE_THRESHOLD) {
-            return List.of();
-        }
-
-        // 2. 只有达到阈值时才把当前 Span 标记为标准 upsert_memory 操作。
+        // 2. 是否触发整理由后台处理器决定；这里仅负责已有集合的归纳。
         GenAiSpanAttributes.recordMemoryConsolidationStart();
 
         // 将每条记忆的身份、摘要和完整正文都放入整理输入。

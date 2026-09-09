@@ -17,7 +17,9 @@ import java.util.Objects;
 // [结构] 引入目录扫描、链接检查、排序和列表所需类型。
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 管理当前工作区中的项目长期记忆。
@@ -339,6 +341,41 @@ public final class MemoryRepository {
                 entries
         );
 
+    }
+
+    /**
+     * 将提取器候选作为全新的主题文件写入仓库。
+     *
+     * @param candidates 已通过领域校验的提取候选
+     * @return 实际创建的记忆；同名候选会获得新的文件名
+     * @throws IOException 读取或保存记忆失败
+     */
+    public List<MemoryEntry> createNew(
+            List<MemoryEntry> candidates
+    ) throws IOException {
+        Objects.requireNonNull(candidates, "candidates 不能为空");
+
+        // 1. 提取阶段不覆盖既有文件；短期同名重复交给整理器以后收敛。
+        Set<String> usedNames = new HashSet<>();
+        for (MemoryEntry entry : list()) {
+            usedNames.add(entry.name());
+        }
+
+        List<MemoryEntry> created = new ArrayList<>();
+        for (MemoryEntry candidate : candidates) {
+            String name = candidate.name();
+            int suffix = 2;
+            while (!usedNames.add(name)) {
+                name = candidate.name() + "-" + suffix++;
+            }
+
+            MemoryEntry createdEntry = name.equals(candidate.name())
+                    ? candidate
+                    : new MemoryEntry(name, candidate.type(), candidate.description(), candidate.body());
+            save(createdEntry);
+            created.add(createdEntry);
+        }
+        return List.copyOf(created);
     }
 
     /**

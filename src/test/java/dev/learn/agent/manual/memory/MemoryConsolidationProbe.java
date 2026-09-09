@@ -108,7 +108,7 @@ public final class MemoryConsolidationProbe {
                     client,
                     model,
                     repository
-            ).consolidateIfNeeded();
+            ).consolidate();
             double elapsedSeconds = (
                     System.nanoTime() - startedAt
             ) / 1_000_000_000.0d;

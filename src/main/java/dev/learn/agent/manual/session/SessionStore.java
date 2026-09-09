@@ -419,6 +419,43 @@ public final class SessionStore implements AutoCloseable {
         });
     }
 
+    /**
+     * 读取一个已提交 Turn 的全部原始消息。
+     *
+     * @param sessionId 持久化 Session ID
+     * @param workspace 调用方工作区
+     * @param turnSeq 当前 Turn 序号
+     * @return 按 canonical seq 排列的消息
+     */
+    public synchronized List<MessageParam> listTurnMessages(
+            String sessionId,
+            String workspace,
+            long turnSeq
+    ) {
+        if (turnSeq < 0) {
+            throw new IllegalArgumentException("turnSeq 不能小于 0");
+        }
+        return inTransaction(connection -> {
+            // 1. 与恢复和通用历史查询共用 workspace 隔离边界。
+            if (!readWorkspace(connection, sessionId).equals(workspace)) {
+                throw new IllegalArgumentException("Session 不属于当前 workspace：" + sessionId);
+            }
+
+            List<MessageParam> messages = new ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT message_json FROM messages WHERE session_id = ? AND turn_seq = ? ORDER BY seq")) {
+                statement.setString(1, sessionId);
+                statement.setLong(2, turnSeq);
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        messages.add(readJson(rows.getString(1), MessageParam.class));
+                    }
+                }
+            }
+            return List.copyOf(messages);
+        });
+    }
+
     /** 在当前事务内读取指定闭区间，保留协议 JSON 和两个序号。 */
     private List<SessionMessage> readSessionMessages(
             Connection connection, String sessionId, long fromSeq, long toSeq) throws SQLException {

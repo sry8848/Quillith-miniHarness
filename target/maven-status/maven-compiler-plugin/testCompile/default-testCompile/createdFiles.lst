@@ -6,6 +6,7 @@ dev\learn\agent\manual\recovery\ContentRejectionRecoveryHandlerTest.class
 dev\learn\agent\manual\cli\ApplicationOptionsTest.class
 dev\learn\agent\manual\output\StreamOutputPrinterTest.class
 dev\learn\agent\manual\session\SessionStoreTest.class
+dev\learn\agent\manual\memory\MemoryWorkStoreTest.class
 dev\learn\agent\manual\tool\tools\ExternalFileToolTest.class
 dev\learn\agent\manual\tool\tools\GlobToolTest.class
 dev\learn\agent\manual\utils\GitRepositoryResolverTest.class

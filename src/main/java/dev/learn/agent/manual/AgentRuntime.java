@@ -90,6 +90,7 @@ public final class AgentRuntime implements AutoCloseable {
     private final GitHubMcpClient githubMcpClient;
     private final AnthropicClient client;
     private final SessionStore sessionStore;
+    private final MemoryRuntime memoryRuntime;
 
     private AgentRuntime(
             AgentSession agentSession,
@@ -100,7 +101,8 @@ public final class AgentRuntime implements AutoCloseable {
             GitMcpClient gitMcpClient,
             GitHubMcpClient githubMcpClient,
             AnthropicClient client,
-            SessionStore sessionStore
+            SessionStore sessionStore,
+            MemoryRuntime memoryRuntime
     ) {
         this.agentSession = agentSession;
         this.parentBackgroundScheduler = parentBackgroundScheduler;
@@ -111,6 +113,7 @@ public final class AgentRuntime implements AutoCloseable {
         this.githubMcpClient = githubMcpClient;
         this.client = client;
         this.sessionStore = sessionStore;
+        this.memoryRuntime = memoryRuntime;
     }
 
     /**
@@ -512,7 +515,8 @@ public final class AgentRuntime implements AutoCloseable {
                 gitMcpClient,
                 githubMcpClient,
                 client,
-                sessionStore
+                sessionStore,
+                memoryRuntime
         );
     }
 
@@ -528,6 +532,7 @@ public final class AgentRuntime implements AutoCloseable {
      */
     @Override
     public void close() {
+        memoryRuntime.close();
         parentBackgroundScheduler.close();
         subagentBackgroundScheduler.close();
         parentBashTool.close();

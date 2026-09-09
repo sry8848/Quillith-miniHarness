@@ -1,6 +1,7 @@
-dev\learn\agent\manual\memory\MemoryTurnResult.class
+dev\learn\agent\manual\memory\MemoryWorkStore$SqlWork.class
 dev\learn\agent\manual\memory\MemoryRecallService.class
 dev\learn\agent\manual\tool\NonRetryableToolException.class
+dev\learn\agent\manual\memory\MemoryWorkStore$1.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryHandler.class
 dev\learn\agent\manual\hook\AgentHook.class
 dev\learn\agent\manual\hook\hooks\SessionSummaryHook.class
@@ -36,9 +37,11 @@ dev\learn\agent\manual\hook\HookRegistry.class
 dev\learn\agent\manual\session\ConversationState.class
 dev\learn\agent\manual\memory\MemoryConsolidator.class
 dev\learn\agent\manual\tool\ToolDefinitionFactory.class
+dev\learn\agent\manual\memory\MemoryBackgroundProcessor.class
 dev\learn\agent\manual\tool\ToolRegistry.class
 dev\learn\agent\manual\tool\tools\CreateTaskTool.class
 dev\learn\agent\manual\tool\tools\TodoWriteTool$1.class
+dev\learn\agent\manual\memory\MemoryWorkStore.class
 dev\learn\agent\manual\AgentRuntime.class
 dev\learn\agent\manual\background\BackgroundTaskScheduler$RunningTask.class
 dev\learn\agent\manual\session\SessionTurnJournal.class
@@ -65,6 +68,7 @@ dev\learn\agent\manual\tool\entity\TodoState.class
 dev\learn\agent\manual\tool\approval\ToolApprovalPolicy.class
 dev\learn\agent\manual\tool\ToolCall.class
 dev\learn\agent\manual\tool\tools\TodoWriteTool.class
+dev\learn\agent\manual\memory\MemoryWorkStore$MaintenanceState.class
 dev\learn\agent\manual\tool\ToolCallDispatcher.class
 dev\learn\agent\manual\hook\HookEffect.class
 dev\learn\agent\manual\mcp\McpAgentTool$1.class
@@ -79,7 +83,7 @@ dev\learn\agent\manual\cli\ExecRunner.class
 dev\learn\agent\manual\mcp\McpToolClient.class
 dev\learn\agent\manual\memory\MemoryRuntime.class
 dev\learn\agent\manual\systemprompt\RefreshScope.class
-dev\learn\agent\manual\memory\MemoryDialogueFormatter.class
+dev\learn\agent\manual\memory\MemoryExtractionDecision.class
 dev\learn\agent\manual\tool\tools\CompleteTaskTool.class
 dev\learn\agent\manual\tool\tools\WriteFileTool.class
 dev\learn\agent\manual\systemprompt\MemorySystemPromptProvider.class
@@ -104,6 +108,7 @@ dev\learn\agent\manual\cli\InteractiveRunner.class
 dev\learn\agent\manual\tool\tools\GetTaskTool.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryManager.class
 dev\learn\agent\manual\cli\ApplicationOptions.class
+dev\learn\agent\manual\memory\MemoryExtractionTask.class
 dev\learn\agent\manual\telemetry\GenAiSpanAttributes.class
 dev\learn\agent\manual\session\TurnJournal.class
 dev\learn\agent\manual\background\BackgroundTaskScheduler.class
