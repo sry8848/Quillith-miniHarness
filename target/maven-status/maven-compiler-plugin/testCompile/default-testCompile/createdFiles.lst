@@ -1,10 +1,12 @@
 dev\learn\agent\manual\tool\approval\DefaultToolApprovalPolicyTest.class
 dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest.class
 dev\learn\agent\manual\systemprompt\MemorySystemPromptProviderTest.class
+dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest$ProviderResponse.class
 dev\learn\agent\manual\tool\ToolRegistryRetryTest$1.class
 dev\learn\agent\manual\recovery\ContentRejectionRecoveryHandlerTest.class
 dev\learn\agent\manual\cli\ApplicationOptionsTest.class
 dev\learn\agent\manual\output\StreamOutputPrinterTest.class
+dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest.class
 dev\learn\agent\manual\session\SessionStoreTest.class
 dev\learn\agent\manual\memory\MemoryWorkStoreTest.class
 dev\learn\agent\manual\tool\tools\ExternalFileToolTest.class
@@ -15,6 +17,7 @@ dev\learn\agent\manual\AgentSessionTest$ProviderResponse.class
 dev\learn\agent\manual\AgentSessionTest$AgentSessionFixture.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryManagerTest$1.class
 dev\learn\agent\manual\AgentHomeResourcePathTest.class
+dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest$ScheduledTask.class
 dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest$ProviderResponse.class
 dev\learn\agent\manual\mcp\GitHubMcpClientTest.class
 dev\learn\agent\manual\tool\approval\ToolApprovalGateTest.class
@@ -22,6 +25,7 @@ dev\learn\agent\manual\utils\WorkspacePathResolverTest.class
 dev\learn\agent\manual\SessionStateTest.class
 dev\learn\agent\manual\AgentSessionTest$1.class
 dev\learn\agent\manual\AgentSessionTest.class
+dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest$RecordingScheduler.class
 dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest$CountingTool.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryManagerTest.class
 dev\learn\agent\manual\tool\tools\GetSessionMessagesToolTest.class
@@ -29,6 +33,7 @@ dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest$Age
 dev\learn\agent\manual\tool\ToolRegistryRetryTest.class
 dev\learn\agent\manual\task\TaskSystemTest.class
 dev\learn\agent\manual\context\ConversationCompactorTest.class
+dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest$ProcessorFixture.class
 dev\learn\agent\manual\memory\MemoryConsolidationProbe.class
 dev\learn\agent\manual\cli\HarborRunnerTest.class
 dev\learn\agent\manual\context\ConversationCompactorTest$Fixture.class

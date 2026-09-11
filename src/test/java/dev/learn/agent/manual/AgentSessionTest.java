@@ -465,6 +465,28 @@ class AgentSessionTest {
         }
     }
 
+    /** 验证评测收尾会等待已入队的 Memory extraction。 */
+    @Test
+    void waitsForPendingMemoryBeforeEvaluationContinues()
+            throws Exception {
+        try (AgentSessionFixture fixture =
+                     new AgentSessionFixture(
+                             workspace,
+                             new HookRegistry(),
+                             List.of(
+                                     ProviderResponse.finalText(),
+                                     ProviderResponse.structuredMemory()
+                             ),
+                             true
+                     )) {
+            fixture.agentSession().submit("remember dark mode");
+
+            // 1. 显式屏障排在 enqueue 的 wake 之后，并只在 pending 清空后返回 0。
+            assertEquals(0, fixture.agentSession().waitForMemoryIdle());
+            assertEquals(2, fixture.requestBodies().size());
+        }
+    }
+
     /** 验证后台 Memory 失败不反向破坏已经完成的主回答。 */
     @Test
     void keepsCompletedAnswerWhenMemoryConsolidationFails()

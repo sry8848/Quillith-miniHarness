@@ -7,7 +7,9 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -17,6 +19,7 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MemoryBackgroundProcessor.class);
     private static final int CONSOLIDATE_AFTER_NEW_FILES = 5;
+    private static final Duration PENDING_RETRY_INTERVAL = Duration.ofMinutes(5);
     private static final Duration MAINTENANCE_INTERVAL = Duration.ofHours(2);
 
     private final MemoryWorkStore workStore;
@@ -24,13 +27,9 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
     private final MemoryRepository repository;
     private final MemoryConsolidator consolidator;
     private final BooleanSupplier memoryEnabled;
-    private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "memory-background");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ScheduledExecutorService executor;
 
-    /** 创建后台处理器。 */
+    /** 创建生产使用的单线程后台处理器。 */
     public MemoryBackgroundProcessor(
             MemoryWorkStore workStore,
             MemoryExtractor extractor,
@@ -38,19 +37,45 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
             MemoryConsolidator consolidator,
             BooleanSupplier memoryEnabled
     ) {
+        this(workStore, extractor, repository, consolidator, memoryEnabled, createExecutor());
+    }
+
+    /** 创建允许测试控制调度时钟的后台处理器。 */
+    MemoryBackgroundProcessor(
+            MemoryWorkStore workStore,
+            MemoryExtractor extractor,
+            MemoryRepository repository,
+            MemoryConsolidator consolidator,
+            BooleanSupplier memoryEnabled,
+            ScheduledExecutorService executor
+    ) {
         this.workStore = Objects.requireNonNull(workStore, "workStore 不能为空");
         this.extractor = Objects.requireNonNull(extractor, "extractor 不能为空");
         this.repository = Objects.requireNonNull(repository, "repository 不能为空");
         this.consolidator = Objects.requireNonNull(consolidator, "consolidator 不能为空");
         this.memoryEnabled = Objects.requireNonNull(memoryEnabled, "memoryEnabled 不能为空");
+        this.executor = Objects.requireNonNull(executor, "executor 不能为空");
     }
 
-    /** 启动恢复处理和两小时维护时钟。 */
+    /** 创建生产使用的 daemon 单线程调度器。 */
+    private static ScheduledExecutorService createExecutor() {
+        return Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "memory-background");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    /** 启动恢复处理、五分钟兜底和两小时维护时钟。 */
     public void start() {
         // 1. 进程重启后立即尝试恢复尚未删除的工作。
         wake();
 
-        // 定时检查从本进程启动两小时后开始；恢复工作由上面的 wake() 立即处理。
+        // 2. 没有新 Turn 时仍定期复用正常批次，避免失败任务长期无人唤醒。
+        executor.scheduleWithFixedDelay(this::runPendingAndThreshold, PENDING_RETRY_INTERVAL.toMillis(),
+                PENDING_RETRY_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
+
+        // 3. 低增长整理从本进程启动两小时后开始，不改变原有 count > 0 语义。
         executor.scheduleWithFixedDelay(this::runTimedMaintenance, MAINTENANCE_INTERVAL.toMillis(),
                 MAINTENANCE_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
     }
@@ -58,6 +83,29 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
     /** 在新工作入队或重新启用记忆后请求一次后台处理。 */
     public void wake() {
         executor.execute(this::runPendingAndThreshold);
+    }
+
+    /**
+     * 在同一后台队列中执行一次正常批次，等待完成后返回剩余任务数。
+     *
+     * @return 本次批次结束后仍待处理的 extraction task 数量
+     */
+    public int runPendingAndWait() {
+        Future<Integer> batch = executor.submit(() -> {
+            // 1. 复用普通 wake 的完整批次和阈值整理，不建立第二套收尾逻辑。
+            runPendingAndThreshold();
+            return workStore.pendingTaskCount();
+        });
+
+        try {
+            // 显式评测屏障必须等待排在它之前的后台工作，才能判断最终问题是否可开始。
+            return batch.get();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待后台记忆处理时被中断", exception);
+        } catch (ExecutionException exception) {
+            throw new IllegalStateException("后台记忆处理批次失败", exception.getCause());
+        }
     }
 
     private void runPendingAndThreshold() {

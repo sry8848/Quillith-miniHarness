@@ -165,6 +165,15 @@ public final class MemoryRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * 显式执行并等待一次正常后台批次。
+     *
+     * @return 批次结束后仍待处理的 extraction task 数量
+     */
+    public int runPendingAndWait() {
+        return backgroundProcessor.runPendingAndWait();
+    }
+
     /** 关闭后台执行器，不删除已持久化工作。 */
     @Override
     public void close() {

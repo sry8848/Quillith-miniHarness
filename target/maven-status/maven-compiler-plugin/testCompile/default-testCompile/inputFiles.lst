@@ -4,6 +4,7 @@ D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manu
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\cli\HarborRunnerTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\context\ConversationCompactorTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\mcp\GitHubMcpClientTest.java
+D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\memory\MemoryConsolidationProbe.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\memory\MemoryWorkStoreTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\output\StreamOutputPrinterTest.java

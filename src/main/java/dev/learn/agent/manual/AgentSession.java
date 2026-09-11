@@ -289,6 +289,15 @@ public final class AgentSession {
     }
 
     /**
+     * 等待此前后台记忆工作并再执行一次正常处理批次。
+     *
+     * @return 批次结束后仍待处理的 extraction task 数量
+     */
+    public int waitForMemoryIdle() {
+        return memoryRuntime.runPendingAndWait();
+    }
+
+    /**
      * 返回当前 Session 的稳定 ID。
      */
     public String sessionId() {

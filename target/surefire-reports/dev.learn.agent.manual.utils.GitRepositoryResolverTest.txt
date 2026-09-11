@@ -1,8 +1,8 @@
 -------------------------------------------------------------------------------
 Test set: dev.learn.agent.manual.utils.GitRepositoryResolverTest
 -------------------------------------------------------------------------------
-Tests run: 2, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.190 s <<< FAILURE! -- in dev.learn.agent.manual.utils.GitRepositoryResolverTest
-dev.learn.agent.manual.utils.GitRepositoryResolverTest.findsRepositoryRootFromNestedDirectory -- Time elapsed: 0.100 s <<< FAILURE!
+Tests run: 2, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.163 s <<< FAILURE! -- in dev.learn.agent.manual.utils.GitRepositoryResolverTest
+dev.learn.agent.manual.utils.GitRepositoryResolverTest.findsRepositoryRootFromNestedDirectory -- Time elapsed: 0.085 s <<< FAILURE!
 org.opentest4j.AssertionFailedError: expected: <D:\learn_claudecode> but was: <D:\learn_claudecode\demo\Quillith-miniHarness>
 	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
 	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)

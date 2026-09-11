@@ -93,6 +93,33 @@ class HarborRunnerTest {
         );
     }
 
+    /** 验证 Memory 收尾控制消息及其两种明确状态。 */
+    @Test
+    void decodesMemoryWaitAndEncodesStatus() {
+        HarborRunner.Request request =
+                HarborRunner.decodeRequest(
+                        "WAIT_MEMORY_IDLE"
+                );
+
+        // 1. 收尾命令不携带用户文本，也不属于普通 Turn。
+        assertEquals(
+                HarborRunner.RequestType.WAIT_MEMORY_IDLE,
+                request.type()
+        );
+        assertEquals(
+                null,
+                request.userText()
+        );
+        assertEquals(
+                "MEMORY_READY",
+                HarborRunner.encodeMemoryStatus(0)
+        );
+        assertEquals(
+                "MEMORY_PENDING 2",
+                HarborRunner.encodeMemoryStatus(2)
+        );
+    }
+
     /** 验证最终问题和多行 Unicode 答案都能无损传输。 */
     @Test
     void decodesAnswerAndEncodesResult() {

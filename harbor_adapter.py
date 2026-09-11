@@ -271,6 +271,22 @@ class QuillithHarborAgent(BaseInstalledAgent):
         if response != "OK":
             raise RuntimeError("Quillith Harbor 新 Session 创建失败")
 
+    async def _wait_memory_idle(
+        self,
+        environment: BaseEnvironment,
+    ) -> None:
+        """等待一次显式 Memory 收尾批次，并拒绝带着 pending 继续答题。"""
+        # 1. Java Memory 模块负责执行和检查队列，Adapter 不读取内部 SQLite。
+        response = await self._exchange(environment, "WAIT_MEMORY_IDLE")
+        if response == "MEMORY_READY":
+            return
+        if response.startswith("MEMORY_PENDING "):
+            pending_count = int(response.removeprefix("MEMORY_PENDING "))
+            raise RuntimeError(
+                f"memory processing incomplete: {pending_count} pending task(s)"
+            )
+        raise RuntimeError("Quillith Harbor Memory wait 返回未知状态")
+
     async def _answer(
         self,
         environment: BaseEnvironment,
@@ -374,11 +390,14 @@ class QuillithMemoryAgent(QuillithHarborAgent):
                     assistant_message["content"],
                 )
 
-        # 5. 跨对话最终问题必须位于不继承旧活动上下文的新 Session。
+        # 5. 所有历史入队后显式等待一次后台收尾，失败时不继续最终问题。
+        await self._wait_memory_idle(environment)
+
+        # 6. 跨对话最终问题必须位于不继承旧活动上下文的新 Session。
         if case["memory_scope"] == "cross_session":
             await self._new_session(environment)
 
-        # 6. 最终问题使用真实主模型，并把纯答案交给 Harbor verifier。
+        # 7. 最终问题使用真实主模型，并把纯答案交给 Harbor verifier。
         answer = await self._answer(environment, case["question"])
         await self._save_answer(
             environment,

@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, Mock, call
 
 
 # 1. 测试只将当前 manual-agent 根目录加入导入路径。
@@ -199,6 +199,32 @@ class QuillithHarborAgentTest(unittest.IsolatedAsyncioTestCase):
             base64.b64decode(encoded_question).decode("utf-8"),
         )
 
+    async def test_wait_memory_idle_accepts_ready(self):
+        """验证显式 Memory 批次完成后允许继续评测。"""
+        agent = object.__new__(QuillithHarborAgent)
+        agent._exchange = AsyncMock(return_value="MEMORY_READY")
+
+        # 1. 收尾状态完全由 Java Memory 模块提供。
+        await agent._wait_memory_idle(object())
+
+        agent._exchange.assert_awaited_once()
+        self.assertEqual(
+            "WAIT_MEMORY_IDLE",
+            agent._exchange.await_args.args[1],
+        )
+
+    async def test_wait_memory_idle_rejects_pending(self):
+        """验证剩余任务不会被当成可评分的 Memory 结果。"""
+        agent = object.__new__(QuillithHarborAgent)
+        agent._exchange = AsyncMock(return_value="MEMORY_PENDING 2")
+
+        # 1. 一次显式批次后直接报告 pending，不在 Adapter 内无限重试。
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "memory processing incomplete: 2 pending task",
+        ):
+            await agent._wait_memory_idle(object())
+
     async def test_exchange_reports_exited_java_process(self):
         """验证 Java 异常退出会立即成为 Adapter 错误。"""
         agent = object.__new__(QuillithHarborAgent)
@@ -222,11 +248,19 @@ class QuillithHarborAgentTest(unittest.IsolatedAsyncioTestCase):
         agent = object.__new__(QuillithMemoryAgent)
         agent._resume = False
         agent._session_started = False
+        protocol = Mock()
         agent._start_session = AsyncMock()
         agent._submit_recorded_turn = AsyncMock()
         agent._new_session = AsyncMock()
+        agent._wait_memory_idle = AsyncMock()
         agent._answer = AsyncMock(return_value="answer")
         agent._save_answer = AsyncMock()
+        protocol.attach_mock(agent._start_session, "start")
+        protocol.attach_mock(agent._submit_recorded_turn, "recorded")
+        protocol.attach_mock(agent._new_session, "new_session")
+        protocol.attach_mock(agent._wait_memory_idle, "wait_memory")
+        protocol.attach_mock(agent._answer, "answer")
+        protocol.attach_mock(agent._save_answer, "save")
         environment = object()
         case = {
             "case_id": "official/case-1",
@@ -266,17 +300,38 @@ class QuillithHarborAgentTest(unittest.IsolatedAsyncioTestCase):
             "official/case-1",
             "answer",
         )
+        self.assertEqual(
+            [
+                call.start(environment),
+                call.recorded(environment, "u1", "a1"),
+                call.new_session(environment),
+                call.recorded(environment, "u2", "a2"),
+                call.wait_memory(environment),
+                call.new_session(environment),
+                call.answer(environment, "question"),
+                call.save(environment, "official/case-1", "answer"),
+            ],
+            protocol.mock_calls,
+        )
 
     async def test_single_session_case_answers_without_starting_new_session(self):
         """验证单对话历史与最终问题留在同一个 Session。"""
         agent = object.__new__(QuillithMemoryAgent)
         agent._resume = False
         agent._session_started = False
+        protocol = Mock()
         agent._start_session = AsyncMock()
         agent._submit_recorded_turn = AsyncMock()
         agent._new_session = AsyncMock()
+        agent._wait_memory_idle = AsyncMock()
         agent._answer = AsyncMock(return_value="answer")
         agent._save_answer = AsyncMock()
+        protocol.attach_mock(agent._start_session, "start")
+        protocol.attach_mock(agent._submit_recorded_turn, "recorded")
+        protocol.attach_mock(agent._new_session, "new_session")
+        protocol.attach_mock(agent._wait_memory_idle, "wait_memory")
+        protocol.attach_mock(agent._answer, "answer")
+        protocol.attach_mock(agent._save_answer, "save")
         environment = object()
         case = {
             "case_id": "official/case-2",
@@ -308,6 +363,51 @@ class QuillithHarborAgentTest(unittest.IsolatedAsyncioTestCase):
             "official/case-2",
             "answer",
         )
+        self.assertEqual(
+            [
+                call.start(environment),
+                call.recorded(environment, "u1", "a1"),
+                call.wait_memory(environment),
+                call.answer(environment, "question"),
+                call.save(environment, "official/case-2", "answer"),
+            ],
+            protocol.mock_calls,
+        )
+
+    async def test_memory_pending_stops_before_final_question(self):
+        """验证收尾仍失败时不创建最终 Session，也不保存伪答案。"""
+        agent = object.__new__(QuillithMemoryAgent)
+        agent._resume = False
+        agent._session_started = False
+        agent._start_session = AsyncMock()
+        agent._submit_recorded_turn = AsyncMock()
+        agent._new_session = AsyncMock()
+        agent._wait_memory_idle = AsyncMock(
+            side_effect=RuntimeError("memory processing incomplete: 1 pending task")
+        )
+        agent._answer = AsyncMock()
+        agent._save_answer = AsyncMock()
+        case = {
+            "case_id": "official/case-pending",
+            "memory_scope": "cross_session",
+            "sessions": [
+                {
+                    "messages": [
+                        {"role": "user", "content": "u1"},
+                        {"role": "assistant", "content": "a1"},
+                    ]
+                }
+            ],
+            "question": "question",
+        }
+
+        # 1. pending 是评测准备错误，不能继续产生 Memory 能力分数。
+        with self.assertRaisesRegex(RuntimeError, "memory processing incomplete"):
+            await agent.run(json.dumps(case), object(), object())
+
+        agent._new_session.assert_not_awaited()
+        agent._answer.assert_not_awaited()
+        agent._save_answer.assert_not_awaited()
 
 
 if __name__ == "__main__":

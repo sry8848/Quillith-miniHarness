@@ -75,6 +75,19 @@ public final class MemoryWorkStore {
         });
     }
 
+    /** 返回当前尚未完成的记忆提取工作数量。 */
+    public synchronized int pendingTaskCount() {
+        return inTransaction(connection -> {
+            // 1. 收尾屏障只需要数量，不反序列化每项任务保存的完整上下文。
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM memory_tasks");
+                 ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getInt(1);
+            }
+        });
+    }
+
     /**
      * 标记一项工作完成，并累计本次真正新建的文件数。
      *

@@ -33,10 +33,16 @@ public final class HarborRunner {
             "ANSWER ";
     private static final String NEW_SESSION =
             "NEW_SESSION";
+    private static final String WAIT_MEMORY_IDLE =
+            "WAIT_MEMORY_IDLE";
     private static final String OK =
             "OK";
     private static final String RESULT_PREFIX =
             "RESULT ";
+    private static final String MEMORY_READY =
+            "MEMORY_READY";
+    private static final String MEMORY_PENDING_PREFIX =
+            "MEMORY_PENDING ";
 
     /**
      * 持续接收 Harbor instruction，并顺序提交给当前 Trial 唯一的父 Agent。
@@ -71,6 +77,24 @@ public final class HarborRunner {
                 continue;
             }
 
+            // 3. 评测收尾只等待 Memory，不创建用户 Turn 或切换 Session。
+            if (decodedRequest.type()
+                    == RequestType.WAIT_MEMORY_IDLE) {
+                int pendingCount =
+                        agentSession.waitForMemoryIdle();
+                System.out.println(
+                        "[Harbor Memory Wait Complete, pending="
+                                + pendingCount
+                                + "]"
+                );
+                writeResponse(
+                        encodeMemoryStatus(
+                                pendingCount
+                        )
+                );
+                continue;
+            }
+
             turnNumber++;
 
             // PID 只用于验证多个 step 复用了同一个进程，不承担生命周期管理。
@@ -85,7 +109,7 @@ public final class HarborRunner {
                             + "]"
             );
 
-            // 3. 根据机器请求选择普通、固定历史或需要返回文本的真实 Turn。
+            // 4. 根据机器请求选择普通、固定历史或需要返回文本的真实 Turn。
             String output =
                     switch (decodedRequest.type()) {
                         case TURN -> {
@@ -109,9 +133,13 @@ public final class HarborRunner {
                                 throw new IllegalStateException(
                                         "NEW_SESSION 已在 Turn 分支前处理"
                                 );
+                        case WAIT_MEMORY_IDLE ->
+                                throw new IllegalStateException(
+                                        "WAIT_MEMORY_IDLE 已在 Turn 分支前处理"
+                                );
                     };
 
-            // 4. submit() 完整返回后，Harbor 才能继续执行本轮 verifier。
+            // 5. submit() 完整返回后，Harbor 才能继续执行本轮 verifier。
             System.out.println(
                     "[Harbor Turn "
                             + turnNumber
@@ -180,7 +208,18 @@ public final class HarborRunner {
             );
         }
 
-        // 2. 保持现有 TURN 的单文本协议。
+        // 2. Memory 收尾命令不携带文本载荷。
+        if (WAIT_MEMORY_IDLE.equals(
+                request
+        )) {
+            return new Request(
+                    RequestType.WAIT_MEMORY_IDLE,
+                    null,
+                    null
+            );
+        }
+
+        // 3. 保持现有 TURN 的单文本协议。
         if (request.startsWith(
                 TURN_PREFIX
         )) {
@@ -195,7 +234,7 @@ public final class HarborRunner {
             );
         }
 
-        // 3. ANSWER 与 TURN 都提交真实模型，只额外要求返回最终文本。
+        // 4. ANSWER 与 TURN 都提交真实模型，只额外要求返回最终文本。
         if (request.startsWith(
                 ANSWER_PREFIX
         )) {
@@ -210,7 +249,7 @@ public final class HarborRunner {
             );
         }
 
-        // 4. 固定历史用两个独立 Base64 字段承载 user 和 assistant。
+        // 5. 固定历史用两个独立 Base64 字段承载 user 和 assistant。
         if (request.startsWith(
                 RECORDED_TURN_PREFIX
         )) {
@@ -318,6 +357,20 @@ public final class HarborRunner {
     }
 
     /**
+     * 编码一次 Memory 收尾批次的机器状态。
+     *
+     * @param pendingCount 批次结束后仍待处理的 task 数量
+     * @return MEMORY_READY 或携带数量的 MEMORY_PENDING 响应
+     */
+    static String encodeMemoryStatus(
+            int pendingCount
+    ) {
+        return pendingCount == 0
+                ? MEMORY_READY
+                : MEMORY_PENDING_PREFIX + pendingCount;
+    }
+
+    /**
      * 向响应 FIFO 写入一条完整的单行协议响应。
      *
      * @param response 响应文本
@@ -345,6 +398,7 @@ public final class HarborRunner {
         TURN,
         RECORDED_TURN,
         NEW_SESSION,
+        WAIT_MEMORY_IDLE,
         ANSWER
     }
 

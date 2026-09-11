@@ -23,10 +23,12 @@ class MemoryWorkStoreTest {
         new MemoryWorkStore(agentHome).enqueue(task);
         MemoryWorkStore recovered = new MemoryWorkStore(agentHome);
         assertEquals(List.of(task), recovered.pendingTasks());
+        assertEquals(1, recovered.pendingTaskCount());
 
         // 2. 只有写文件成功后的确认才删除工作并增加整理计数。
         recovered.completeTaskAndIncrement("task-1", 2);
         assertEquals(List.of(), recovered.pendingTasks());
+        assertEquals(0, recovered.pendingTaskCount());
         assertEquals(2, recovered.maintenanceState().unconsolidatedCount());
     }
 
