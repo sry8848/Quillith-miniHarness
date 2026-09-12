@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -18,14 +19,14 @@ import java.util.function.BooleanSupplier;
 public final class MemoryBackgroundProcessor implements AutoCloseable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MemoryBackgroundProcessor.class);
-    private static final int CONSOLIDATE_AFTER_NEW_FILES = 5;
+    private static final int ORGANIZE_AFTER_NEW_FILES = 5;
     private static final Duration PENDING_RETRY_INTERVAL = Duration.ofMinutes(5);
     private static final Duration MAINTENANCE_INTERVAL = Duration.ofHours(2);
 
     private final MemoryWorkStore workStore;
     private final MemoryExtractor extractor;
-    private final MemoryRepository repository;
-    private final MemoryConsolidator consolidator;
+    private final LlmwikiStore llmwikiStore;
+    private final MemoryOrganizer organizer;
     private final BooleanSupplier memoryEnabled;
     private final ScheduledExecutorService executor;
 
@@ -33,26 +34,26 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
     public MemoryBackgroundProcessor(
             MemoryWorkStore workStore,
             MemoryExtractor extractor,
-            MemoryRepository repository,
-            MemoryConsolidator consolidator,
+            LlmwikiStore llmwikiStore,
+            MemoryOrganizer organizer,
             BooleanSupplier memoryEnabled
     ) {
-        this(workStore, extractor, repository, consolidator, memoryEnabled, createExecutor());
+        this(workStore, extractor, llmwikiStore, organizer, memoryEnabled, createExecutor());
     }
 
     /** 创建允许测试控制调度时钟的后台处理器。 */
     MemoryBackgroundProcessor(
             MemoryWorkStore workStore,
             MemoryExtractor extractor,
-            MemoryRepository repository,
-            MemoryConsolidator consolidator,
+            LlmwikiStore llmwikiStore,
+            MemoryOrganizer organizer,
             BooleanSupplier memoryEnabled,
             ScheduledExecutorService executor
     ) {
         this.workStore = Objects.requireNonNull(workStore, "workStore 不能为空");
         this.extractor = Objects.requireNonNull(extractor, "extractor 不能为空");
-        this.repository = Objects.requireNonNull(repository, "repository 不能为空");
-        this.consolidator = Objects.requireNonNull(consolidator, "consolidator 不能为空");
+        this.llmwikiStore = Objects.requireNonNull(llmwikiStore, "llmwikiStore 不能为空");
+        this.organizer = Objects.requireNonNull(organizer, "organizer 不能为空");
         this.memoryEnabled = Objects.requireNonNull(memoryEnabled, "memoryEnabled 不能为空");
         this.executor = Objects.requireNonNull(executor, "executor 不能为空");
     }
@@ -113,7 +114,7 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
             return;
         }
         drainPendingTasks();
-        consolidateWhenThresholdReached();
+        organizeWhenThresholdReached();
     }
 
     private void runTimedMaintenance() {
@@ -123,7 +124,7 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
         // 1. 先排空已持久化工作，再决定是否需要低频全量整理。
         drainPendingTasks();
         if (workStore.maintenanceState().unconsolidatedCount() > 0) {
-            consolidate();
+            organize();
         }
     }
 
@@ -131,9 +132,9 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
         List<MemoryExtractionTask> tasks = workStore.pendingTasks();
         for (MemoryExtractionTask task : tasks) {
             try {
-                // 1. 提取器只返回候选，仓库在此处只创建新的主题文件。
-                List<MemoryEntry> created = repository.createNew(extractor.extract(task));
-                workStore.completeTaskAndIncrement(task.taskId(), created.size());
+                // 1. 提取器只返回草稿，Store 负责近期落盘和根索引最小追加。
+                List<Path> createdPaths = llmwikiStore.writeRecent(extractor.extract(task));
+                workStore.completeTaskAndIncrement(task.taskId(), createdPaths.size());
             } catch (Exception exception) {
                 // 工作不删除，下一次唤醒会按至少一次语义重试。
                 LOGGER.warn("后台记忆提取失败，保留工作等待重试。task_id={}", task.taskId(), exception);
@@ -141,16 +142,16 @@ public final class MemoryBackgroundProcessor implements AutoCloseable {
         }
     }
 
-    private void consolidateWhenThresholdReached() {
-        if (workStore.maintenanceState().unconsolidatedCount() >= CONSOLIDATE_AFTER_NEW_FILES) {
-            consolidate();
+    private void organizeWhenThresholdReached() {
+        if (workStore.maintenanceState().unconsolidatedCount() >= ORGANIZE_AFTER_NEW_FILES) {
+            organize();
         }
     }
 
-    private void consolidate() {
+    private void organize() {
         try {
             // 1. 只有整理成功后才清除计数，失败时保留下一次触发机会。
-            consolidator.consolidate();
+            organizer.organize();
             workStore.clearUnconsolidatedCount();
         } catch (IOException | RuntimeException exception) {
             LOGGER.warn("后台记忆整理失败，保留整理计数等待重试", exception);

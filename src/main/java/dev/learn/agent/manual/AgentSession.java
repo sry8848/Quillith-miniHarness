@@ -100,7 +100,6 @@ public final class AgentSession {
      *
      * @param query 用户输入
      * @return 当前 Turn 的最终 assistant 文本；输入被 Hook 阻止时为空字符串
-     * @throws IOException 回答前的记忆召回读取失败
      * @throws AnthropicServiceException Provider Error 无法恢复时，在诊断后抛出
      */
     public String submit(
@@ -118,7 +117,6 @@ public final class AgentSession {
      * @param userText 固定历史中的 user 文本
      * @param assistantText 固定历史中的 assistant 文本
      * @return 已经提交的固定 assistant 文本；输入被 Hook 阻止时为空字符串
-     * @throws IOException 回答前的记忆召回读取失败
      */
     public String submitRecorded(
             String userText,
@@ -140,7 +138,6 @@ public final class AgentSession {
      * @param query 用户输入
      * @param recordedAssistant 固定 assistant；{@code null} 表示调用真实模型
      * @return 当前 Turn 的最终 assistant 文本；输入被 Hook 阻止时为空字符串
-     * @throws IOException 回答前的记忆召回读取失败
      */
     @WithSpan("agent.turn")
     private String submitInternal(
@@ -179,16 +176,11 @@ public final class AgentSession {
             return "";
         }
 
-        // 4. 保持现有 SESSION Prompt 刷新和长期记忆召回时机。
+        // 4. 每轮刷新根记忆索引；正文由主 Agent 使用现有文件工具按需读取。
         systemPromptManager.refreshFrom(
                 RefreshScope.SESSION,
                 sessionState
         );
-
-        String recalledMemories =
-                memoryRuntime.recall(
-                        query
-                );
 
         // 5. 首条通过 Hook 的用户消息在请求 Provider 前创建 Session。
         // 用户输入一旦被接受就是已发生事实，Provider 失败不能撤销它。
@@ -239,11 +231,11 @@ public final class AgentSession {
             output = recordedAssistant == null
                     ? agentLoop.run(
                     conversationState,
-                    recalledMemories
+                    ""
             )
                     : agentLoop.runRecorded(
                     conversationState,
-                    recalledMemories,
+                    "",
                     recordedAssistant
             );
         } catch (AnthropicServiceException exception) {

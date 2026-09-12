@@ -1,5 +1,4 @@
 dev\learn\agent\manual\memory\MemoryWorkStore$SqlWork.class
-dev\learn\agent\manual\memory\MemoryRecallService.class
 dev\learn\agent\manual\tool\NonRetryableToolException.class
 dev\learn\agent\manual\memory\MemoryWorkStore$1.class
 dev\learn\agent\manual\recovery\ModelRequestRecoveryHandler.class
@@ -20,8 +19,6 @@ dev\learn\agent\manual\hook\hooks\TodoReminderHook$TurnCounts.class
 dev\learn\agent\manual\memory\MemoryDraft.class
 dev\learn\agent\manual\memory\MemoryExtractor.class
 dev\learn\agent\manual\AgentLoop.class
-dev\learn\agent\manual\memory\MemorySelector.class
-dev\learn\agent\manual\memory\MemoryEntry.class
 dev\learn\agent\manual\background\BackgroundTaskScheduler$CompletedTask.class
 dev\learn\agent\manual\tool\RetryableToolException.class
 dev\learn\agent\manual\task\TaskStore.class
@@ -35,7 +32,6 @@ dev\learn\agent\manual\context\ConversationCompactor.class
 dev\learn\agent\manual\skill\SkillDefinition.class
 dev\learn\agent\manual\hook\HookRegistry.class
 dev\learn\agent\manual\session\ConversationState.class
-dev\learn\agent\manual\memory\MemoryConsolidator.class
 dev\learn\agent\manual\tool\ToolDefinitionFactory.class
 dev\learn\agent\manual\memory\MemoryBackgroundProcessor.class
 dev\learn\agent\manual\tool\ToolRegistry.class
@@ -56,7 +52,6 @@ dev\learn\agent\manual\tool\tools\BashTool.class
 dev\learn\agent\manual\hook\hooks\LargeOutputHook.class
 dev\learn\agent\manual\session\SessionPersistenceException.class
 dev\learn\agent\manual\context\ContextManager$PersistencePlan.class
-dev\learn\agent\manual\memory\MemoryType.class
 dev\learn\agent\manual\AgentLoop$ContentRejectionDirection.class
 dev\learn\agent\manual\cli\HarborRunner$Request.class
 dev\learn\agent\manual\mcp\GitMcpClient.class
@@ -74,7 +69,6 @@ dev\learn\agent\manual\hook\HookEffect.class
 dev\learn\agent\manual\mcp\McpAgentTool$1.class
 dev\learn\agent\manual\tool\tools\TaskTool.class
 dev\learn\agent\manual\tool\tools\ListTasksTool$1.class
-dev\learn\agent\manual\memory\MemoryRepository.class
 dev\learn\agent\manual\tool\approval\ToolApprovalRequirement.class
 dev\learn\agent\manual\AgentSession$1.class
 dev\learn\agent\manual\skill\SkillFileParser.class
@@ -84,6 +78,8 @@ dev\learn\agent\manual\mcp\McpToolClient.class
 dev\learn\agent\manual\memory\MemoryRuntime.class
 dev\learn\agent\manual\systemprompt\RefreshScope.class
 dev\learn\agent\manual\memory\MemoryExtractionDecision.class
+dev\learn\agent\manual\memory\MemoryOrganizer.class
+dev\learn\agent\manual\memory\LlmwikiStore.class
 dev\learn\agent\manual\tool\tools\CompleteTaskTool.class
 dev\learn\agent\manual\tool\tools\WriteFileTool.class
 dev\learn\agent\manual\systemprompt\MemorySystemPromptProvider.class
@@ -124,7 +120,6 @@ dev\learn\agent\manual\tool\tools\ClaimTaskTool.class
 dev\learn\agent\manual\AgentLoop$StreamTurn.class
 dev\learn\agent\manual\tool\tools\GlobTool.class
 dev\learn\agent\manual\hook\hooks\ToolLoggingHook.class
-dev\learn\agent\manual\memory\MemoryFileParser.class
 dev\learn\agent\manual\tool\tools\EditFileTool.class
 dev\learn\agent\manual\tool\AgentTool.class
 dev\learn\agent\manual\mcp\McpAgentTool.class

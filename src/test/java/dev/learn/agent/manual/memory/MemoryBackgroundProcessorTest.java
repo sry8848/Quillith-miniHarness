@@ -5,6 +5,7 @@ import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.core.ObjectMappers;
 import com.anthropic.models.messages.MessageParam;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.learn.agent.manual.SessionState;
@@ -74,7 +75,7 @@ class MemoryBackgroundProcessorTest {
             }
             MemoryBackgroundProcessor processor = fixture.processor();
 
-            // 1. 六项 extraction 全部完成后，才发出第七个 consolidation 请求。
+            // 1. 六项 extraction 全部完成后，才发出第七个 organization 请求。
             assertEquals(0, processor.runPendingAndWait());
             assertEquals(7, fixture.requestBodies().size());
             assertEquals(6, fixture.workStore().maintenanceState().unconsolidatedCount());
@@ -85,7 +86,7 @@ class MemoryBackgroundProcessorTest {
     @Test
     void timedMaintenanceConsolidatesAnyPositiveCount() throws Exception {
         try (RecordingScheduler scheduler = new RecordingScheduler();
-             ProcessorFixture fixture = new ProcessorFixture(workspace, List.of(consolidationSuccess()))) {
+             ProcessorFixture fixture = new ProcessorFixture(workspace, List.of(organizationSuccess()))) {
             fixture.createExistingMemory();
             fixture.enqueue("completed-task");
             fixture.workStore().completeTaskAndIncrement("completed-task", 1);
@@ -96,8 +97,9 @@ class MemoryBackgroundProcessorTest {
             scheduler.scheduledTasks().get(1).command().run();
             assertEquals(0, fixture.workStore().maintenanceState().unconsolidatedCount());
             assertEquals(1, fixture.requestBodies().size());
+            assertEquals("quillith: organize llmwiki", fixture.lastCommitSubject());
 
-            // 整理同样会重新生成记忆正文，因此必须复用中文输出约束。
+            // 整理 Prompt 保持中文，协议字段名无需翻译。
             assertTrue(fixture.requestBodies().getFirst().contains("简体中文"));
         }
     }
@@ -125,9 +127,9 @@ class MemoryBackgroundProcessorTest {
         }
     }
 
-    /** 验证提取请求声明 JSON 协议，并要求记忆自然语言内容使用中文。 */
+    /** 验证提取请求关闭思考、声明 JSON 协议并要求自然语言内容使用中文。 */
     @Test
-    void extractionPromptDeclaresJsonOutputAndChineseContent() throws Exception {
+    void extractionRequestDisablesThinkingAndDeclaresOutputContract() throws Exception {
         try (ProcessorFixture fixture = new ProcessorFixture(
                 workspace,
                 List.of(extractionSuccess())
@@ -139,10 +141,15 @@ class MemoryBackgroundProcessorTest {
 
             // 百炼会拒绝提示词中没有 JSON 关键词的 output_config 请求，
             // 因此直接验证发送给 Provider 的最终请求体，而不是只检查本地常量。
-            assertTrue(fixture.requestBodies().getFirst().contains("JSON"));
+            String requestBody = fixture.requestBodies().getFirst();
+            assertTrue(requestBody.contains("JSON"));
 
             // 自然语言字段需要显式约束，否则英文历史会让模型继续生成英文记忆。
-            assertTrue(fixture.requestBodies().getFirst().contains("简体中文"));
+            assertTrue(requestBody.contains("简体中文"));
+
+            // 提取只是固定结构的信息抽取，显式关闭默认思考以避免额外延迟和 Token 消耗。
+            JsonNode requestJson = ObjectMappers.jsonMapper().readTree(requestBody);
+            assertEquals("disabled", requestJson.path("thinking").path("type").asText());
         }
     }
 
@@ -160,21 +167,19 @@ class MemoryBackgroundProcessorTest {
         return new ProviderResponse(200, "text/event-stream", textStream(
                 "extract",
                 "{\"needModelContext\":false,\"memories\":[{\"name\":\"travel-note\","
-                        + "\"type\":\"user\",\"description\":\"Travel note\","
-                        + "\"body\":\"The user shared a travel note.\"}]}"
+                        + "\"description\":\"旅行记录\","
+                        + "\"body\":\"用户分享了一条旅行记录。\"}]}"
         ));
     }
 
-    /** 返回一次保留空集合的成功整理响应。 */
-    private static ProviderResponse consolidationSuccess() {
+    /** 返回一次不调用工具的成功整理响应。 */
+    private static ProviderResponse organizationSuccess() {
         return new ProviderResponse(
                 200,
                 "text/event-stream",
                 textStream(
-                        "consolidate",
-                        "{\"memories\":[{\"name\":\"existing-memory\","
-                                + "\"type\":\"project\",\"description\":\"Existing memory\","
-                                + "\"body\":\"Existing body.\"}]}"
+                        "organize",
+                        "整理完成"
                 )
         );
     }
@@ -227,8 +232,8 @@ class MemoryBackgroundProcessorTest {
         private final AnthropicClient client;
         private final MemoryWorkStore workStore;
         private final MemoryExtractor extractor;
-        private final MemoryRepository repository;
-        private final MemoryConsolidator consolidator;
+        private final LlmwikiStore llmwikiStore;
+        private final MemoryOrganizer organizer;
         private MemoryBackgroundProcessor processor;
 
         private ProcessorFixture(Path workspace, List<ProviderResponse> responses) throws Exception {
@@ -253,8 +258,9 @@ class MemoryBackgroundProcessorTest {
             WorkspacePathResolver paths = new WorkspacePathResolver(sessionState);
             workStore = new MemoryWorkStore(workspace);
             extractor = new MemoryExtractor(client, "test-model");
-            repository = new MemoryRepository(paths);
-            consolidator = new MemoryConsolidator(client, "test-model", repository);
+            llmwikiStore = new LlmwikiStore(paths);
+            organizer = new MemoryOrganizer(client, "test-model", llmwikiStore,
+                    bashExecutable(), workspace);
         }
 
         /** 创建使用真实后台线程的处理器。 */
@@ -262,8 +268,8 @@ class MemoryBackgroundProcessorTest {
             processor = new MemoryBackgroundProcessor(
                     workStore,
                     extractor,
-                    repository,
-                    consolidator,
+                    llmwikiStore,
+                    organizer,
                     () -> true
             );
             return processor;
@@ -274,8 +280,8 @@ class MemoryBackgroundProcessorTest {
             processor = new MemoryBackgroundProcessor(
                     workStore,
                     extractor,
-                    repository,
-                    consolidator,
+                    llmwikiStore,
+                    organizer,
                     () -> true,
                     scheduler
             );
@@ -287,13 +293,12 @@ class MemoryBackgroundProcessorTest {
             workStore.enqueue(task(taskId));
         }
 
-        /** 创建两小时整理所需的一条既有 Memory。 */
+        /** 创建两小时整理所需的一条近期 Memory。 */
         private void createExistingMemory() throws IOException {
-            repository.createNew(List.of(new MemoryEntry(
+            llmwikiStore.writeRecent(List.of(new MemoryDraft(
                     "existing-memory",
-                    MemoryType.PROJECT,
-                    "Existing memory",
-                    "Existing body."
+                    "既有记忆",
+                    "既有正文。"
             )));
         }
 
@@ -303,6 +308,17 @@ class MemoryBackgroundProcessorTest {
 
         private List<String> requestBodies() {
             return requestBodies;
+        }
+
+        /** 返回 llmwiki 当前 HEAD 的提交标题。 */
+        private String lastCommitSubject() throws Exception {
+            Process process = new ProcessBuilder(
+                    "git", "-C", llmwikiStore.root().toString(), "log", "-1", "--pretty=%s")
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+            assertEquals(0, process.waitFor());
+            return output;
         }
 
         /** 按请求顺序返回固定 Provider 响应。 */
@@ -326,8 +342,16 @@ class MemoryBackgroundProcessorTest {
             if (processor != null) {
                 processor.close();
             }
+            organizer.close();
             client.close();
             server.stop(0);
+        }
+
+        /** 返回测试宿主上已经存在的 Bash。 */
+        private static Path bashExecutable() {
+            return System.getProperty("os.name").toLowerCase().contains("win")
+                    ? Path.of("C:/Windows/System32/bash.exe")
+                    : Path.of("/bin/bash");
         }
     }
 

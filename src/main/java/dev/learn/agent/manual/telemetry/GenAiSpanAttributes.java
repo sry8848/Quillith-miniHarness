@@ -44,14 +44,10 @@ public final class GenAiSpanAttributes {
             "gen_ai.memory.record.count";
     private static final String MEMORY_RECORDS =
             "gen_ai.memory.records";
-    private static final String MEMORY_CANDIDATE_COUNT =
-            "quillith.memory.candidate.count";
     private static final String MEMORY_INPUT_TRUNCATED =
             "quillith.memory.input.truncated";
-    private static final String MEMORY_BEFORE_COUNT =
-            "quillith.memory.before.count";
     private static final String MEMORY_STORE =
-            ".memory";
+            ".memory/llmwiki";
 
     private GenAiSpanAttributes() {
     }
@@ -117,26 +113,6 @@ public final class GenAiSpanAttributes {
     }
 
     /**
-     * 记录一次 Memory 搜索的标准结果和候选目录规模。
-     *
-     * @param candidateCount Selector 可以选择的记忆数量
-     * @param recordIds Selector 实际返回的稳定记忆 ID
-     */
-    public static void recordMemorySearch(
-            int candidateCount,
-            List<String> recordIds
-    ) {
-        // 1. 标准字段描述 Memory 搜索及其实际返回记录。
-        Span span = Span.current();
-        span.setAttribute(OPERATION_NAME, "search_memory");
-        span.setAttribute(MEMORY_STORE_ID, MEMORY_STORE);
-        recordMemoryRecords(span, recordIds);
-
-        // 候选目录数量是 Quillith Selector 的内部决策输入，标准字段没有对应语义。
-        span.setAttribute(MEMORY_CANDIDATE_COUNT, candidateCount);
-    }
-
-    /**
      * 记录 Memory 提取操作及其是否截断了原始输入。
      *
      * @param inputTruncated 提取输入是否超过字符预算并被截断
@@ -151,18 +127,8 @@ public final class GenAiSpanAttributes {
         span.setAttribute(MEMORY_INPUT_TRUNCATED, inputTruncated);
     }
 
-    /**
-     * 记录 Memory 整理判断阈值所使用的原始记录数量。
-     *
-     * @param beforeCount 整理判断前的完整记忆数量
-     */
-    public static void recordMemoryBeforeConsolidation(int beforeCount) {
-        // 整理前数量用于判断阈值和压缩比例，标准 record.count 只描述操作结果。
-        Span.current().setAttribute(MEMORY_BEFORE_COUNT, beforeCount);
-    }
-
     /** 将已经确定执行的 Memory 整理标记为标准 upsert 操作。 */
-    public static void recordMemoryConsolidationStart() {
+    public static void recordMemoryOrganizationStart() {
         // 1. 整理可能创建或更新记录，使用标准 upsert_memory 操作。
         Span span = Span.current();
         span.setAttribute(OPERATION_NAME, "upsert_memory");
@@ -170,7 +136,7 @@ public final class GenAiSpanAttributes {
     }
 
     /**
-     * 记录 Memory 创建或整理操作最终产生的记录。
+     * 记录 Memory 创建操作最终产生的记录。
      *
      * @param recordIds 本次操作尝试创建或更新的稳定记忆 ID
      */

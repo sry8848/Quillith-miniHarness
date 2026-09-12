@@ -18,9 +18,6 @@ import dev.learn.agent.manual.hook.AgentHook;
 import dev.learn.agent.manual.hook.HookEffect;
 import dev.learn.agent.manual.hook.HookRegistry;
 import dev.learn.agent.manual.memory.MemoryRuntime;
-import dev.learn.agent.manual.memory.MemoryEntry;
-import dev.learn.agent.manual.memory.MemoryRepository;
-import dev.learn.agent.manual.memory.MemoryType;
 import dev.learn.agent.manual.output.StreamOutputPrinter;
 import dev.learn.agent.manual.recovery.ModelRequestRecoveryManager;
 import dev.learn.agent.manual.session.ConversationState;
@@ -487,42 +484,21 @@ class AgentSessionTest {
         }
     }
 
-    /** 验证后台 Memory 失败不反向破坏已经完成的主回答。 */
+    /** 验证主回答前不再同步调用 Memory Selector。 */
     @Test
-    void keepsCompletedAnswerWhenMemoryConsolidationFails()
+    void answersWithoutSynchronousMemorySelection()
             throws Exception {
         try (AgentSessionFixture fixture =
                      new AgentSessionFixture(
                              workspace,
                              new HookRegistry(),
                              List.of(
-                                     ProviderResponse.memorySelection(),
                                      ProviderResponse.finalText(),
-                                     ProviderResponse.structuredMemory(),
-                                     ProviderResponse.providerError()
+                                     ProviderResponse.structuredMemory()
                              ),
                              true
                      )) {
-            MemoryRepository repository =
-                    new MemoryRepository(
-                            new WorkspacePathResolver(
-                                    fixture.sessionState()
-                            )
-                    );
-
-            // 1. 预置记忆以触发召回，后台提取不属于本轮回答的同步路径。
-            for (int index = 0; index < 9; index++) {
-                repository.save(
-                        new MemoryEntry(
-                                "existing-memory-" + index,
-                                MemoryType.PROJECT,
-                                "Existing memory " + index,
-                                "Existing body " + index
-                        )
-                );
-            }
-
-            // 2. 召回成功、后台工作尚未完成时也必须交付主回答。
+            // 1. 第一条 Provider 响应直接属于主 Agent，没有前置选择请求。
             String answer =
                     fixture.agentSession()
                             .submit(
@@ -533,7 +509,7 @@ class AgentSessionTest {
                     "done",
                     answer
             );
-            assertTrue(fixture.requestBodies().size() >= 2);
+            assertTrue(fixture.requestBodies().getFirst().contains("I prefer dark mode"));
         }
     }
 
@@ -808,7 +784,8 @@ class AgentSessionTest {
                             sessionState,
                             client,
                             "test-model",
-                            paths
+                            paths,
+                            bashExecutable()
                     );
             ConversationCompactor compactor = new ConversationCompactor(client, "test-model", sessionStore, sessionState);
             AgentLoop agentLoop =
@@ -865,6 +842,13 @@ class AgentSessionTest {
 
         private List<String> requestBodies() {
             return requestBodies;
+        }
+
+        /** 返回测试宿主上已经存在的 Bash。 */
+        private static Path bashExecutable() {
+            return System.getProperty("os.name").toLowerCase().contains("win")
+                    ? Path.of("C:/Windows/System32/bash.exe")
+                    : Path.of("/bin/bash");
         }
 
         private SessionStore sessionStore() {
@@ -929,14 +913,6 @@ class AgentSessionTest {
             );
         }
 
-        /** 返回一次没有相关主题的流式选择结果。 */
-        private static ProviderResponse memorySelection() {
-            return new ProviderResponse(
-                    200,
-                    "text/event-stream",
-                    memorySelectionStream()
-            );
-        }
     }
 
     private static String finalTextStream() {
@@ -954,20 +930,12 @@ class AgentSessionTest {
                 + "data: {\"type\":\"message_stop\"}\n\n";
     }
 
-    private static String memorySelectionStream() {
-        return textStream(
-                "msg-memory-selection",
-                "[]"
-        );
-    }
-
     private static String structuredMemoryStream() {
         return textStream(
                 "msg-memory",
                 "{\"memories\":[{\"name\":\"user-interface-preference\","
-                        + "\"type\":\"user\","
-                        + "\"description\":\"User prefers dark mode\","
-                        + "\"body\":\"The user prefers dark mode.\"}]}"
+                        + "\"description\":\"用户偏好深色模式\","
+                        + "\"body\":\"用户偏好使用深色模式。\"}]}"
         );
     }
 

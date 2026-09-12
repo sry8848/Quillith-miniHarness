@@ -395,7 +395,8 @@ public final class AgentRuntime implements AutoCloseable {
                         sessionState,
                         client,
                         model,
-                        paths
+                        paths,
+                        bashExecutable
                 );
         ContextManager contextManager =
                 new ContextManager(paths);

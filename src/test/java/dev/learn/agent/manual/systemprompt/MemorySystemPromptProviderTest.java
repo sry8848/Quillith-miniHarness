@@ -3,10 +3,7 @@ package dev.learn.agent.manual.systemprompt;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import dev.learn.agent.manual.SessionState;
-import dev.learn.agent.manual.memory.MemoryEntry;
-import dev.learn.agent.manual.memory.MemoryRepository;
 import dev.learn.agent.manual.memory.MemoryRuntime;
-import dev.learn.agent.manual.memory.MemoryType;
 import dev.learn.agent.manual.session.SessionStore;
 import dev.learn.agent.manual.tool.approval.ToolApprovalMode;
 import dev.learn.agent.manual.utils.WorkspacePathResolver;
@@ -18,352 +15,99 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * 验证 MEMORY.md 索引进入 System Prompt，以及运行中开关的效果。
- */
+/** 验证 llmwiki 根索引进入 System Prompt，以及运行中开关的效果。 */
 class MemorySystemPromptProviderTest {
 
-    // 为每个测试提供隔离的工作区。
     @TempDir
     Path workspace;
 
-    /**
-     * Given SessionStore 已创建 .memory，when 还没有长期记忆主题，then 启动得到空索引。
-     */
+    /** Session 数据库存在但根索引缺失时，不注入空记忆 section。 */
     @Test
-    void treatsSessionDatabaseWithoutMemoryTopicsAsEmptyMemory()
-            throws IOException {
-        AnthropicClient client =
-                testClient();
-        try (SessionStore ignored =
-                     new SessionStore(
-                             workspace
-                     )) {
-            SessionState sessionState =
-                    new SessionState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-            MemoryRuntime runtime =
-                    new MemoryRuntime(
-                            sessionState,
-                            client,
-                            "test-model",
-                            new WorkspacePathResolver(
-                                    sessionState
-                            )
-                    );
-            SystemPromptManager manager =
-                    new SystemPromptManager(
-                            List.of(
-                                    new MemorySystemPromptProvider(
-                                            runtime
-                                    )
-                            )
-                    );
+    void treatsSessionDatabaseWithoutRootIndexAsEmptyMemory() throws IOException {
+        SessionState state = sessionState(true);
+        AnthropicClient client = testClient();
+        try (SessionStore ignored = new SessionStore(workspace);
+             MemoryRuntime runtime = runtime(client, state)) {
+            SystemPromptManager manager = manager(runtime);
 
-            // 1. sessions.db 不属于长期记忆主题，不能阻止全新 workspace 启动。
-            SystemPrompt prompt =
-                    manager.refreshFrom(
-                            RefreshScope.APPLICATION,
-                            sessionState
-                    );
-
-            assertFalse(
-                    prompt.content()
-                            .contains(
-                                    "<memory>"
-                            )
-            );
+            // 1. sessions.db 是原始运行事实，不属于 llmwiki 导航内容。
+            SystemPrompt prompt = manager.refreshFrom(RefreshScope.APPLICATION, state);
+            assertFalse(prompt.content().contains("<memory>"));
         } finally {
             client.close();
         }
     }
 
-    /**
-     * Given 已有长期记忆主题，when MEMORY.md 丢失，then 仍暴露仓库损坏。
-     */
+    /** 根索引存在时只注入导航内容和中文渐进读取说明。 */
     @Test
-    void rejectsMemoryTopicsWithoutIndex()
-            throws IOException {
-        Path memoryDirectory =
-                Files.createDirectories(
-                        workspace.resolve(
-                                ".memory"
-                        )
-                );
-        Files.writeString(
-                memoryDirectory.resolve(
-                        "project-fact.md"
-                ),
-                "---\n"
-                        + "name: project-fact\n"
-                        + "description: 项目事实\n"
-                        + "type: project\n"
-                        + "---\n"
-                        + "正文\n"
-        );
-        AnthropicClient client =
-                testClient();
-        try {
-            SessionState sessionState =
-                    new SessionState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-            MemoryRuntime runtime =
-                    new MemoryRuntime(
-                            sessionState,
-                            client,
-                            "test-model",
-                            new WorkspacePathResolver(
-                                    sessionState
-                            )
-                    );
+    void loadsRootIndexIntoSystemPrompt() throws IOException {
+        Path llmwiki = Files.createDirectories(workspace.resolve(".memory/llmwiki"));
+        Files.writeString(llmwiki.resolve("index.md"),
+                "- [coding-style.md](coding-style.md) — 项目编码风格\n");
+        SessionState state = sessionState(true);
+        AnthropicClient client = testClient();
+        try (MemoryRuntime runtime = runtime(client, state)) {
+            SystemPrompt prompt = manager(runtime).refreshFrom(RefreshScope.APPLICATION, state);
 
-            // 1. 已有主题意味着索引缺失是真实不一致，不能作为空仓库读取。
-            assertThrows(
-                    IllegalStateException.class,
-                    runtime::loadIndex
-            );
+            // 1. 根索引常驻，但正文不会被同步加载。
+            assertTrue(prompt.content().contains("coding-style.md"));
+            assertTrue(prompt.content().contains("项目编码风格"));
+            assertTrue(prompt.content().contains("目录被折叠时"));
+            assertTrue(prompt.content().contains(".memory/llmwiki/"));
+            assertFalse(prompt.content().contains("一次最多五条"));
         } finally {
             client.close();
         }
     }
 
-    /**
-     * Given 已保存记忆，when 刷新 System Prompt，then 只注入索引内容。
-     */
+    /** 运行中关闭再开启 Memory 时，根索引 section 随 Session 状态增删。 */
     @Test
-    void loadsMemoryIndexIntoSystemPrompt()
-            throws IOException {
-        AnthropicClient client =
-                testClient();
-        try {
-            SessionState sessionState =
-                    new SessionState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-            WorkspacePathResolver paths =
-                    new WorkspacePathResolver(
-                            sessionState
-                    );
-            MemoryRepository repository =
-                    new MemoryRepository(
-                            paths
-                    );
-            repository.save(
-                    new MemoryEntry(
-                            "coding-style",
-                            MemoryType.PROJECT,
-                            "项目编码风格",
-                            "正文不应在索引注入时加载"
-                    )
-            );
-            MemoryRuntime runtime =
-                    new MemoryRuntime(
-                            sessionState,
-                            client,
-                            "test-model",
-                            paths
-                    );
-            SystemPromptManager manager =
-                    new SystemPromptManager(
-                            List.of(
-                                    new MemorySystemPromptProvider(
-                                            runtime
-                                    )
-                            )
-                    );
+    void togglesMemorySectionAtRuntime() throws IOException {
+        Path llmwiki = Files.createDirectories(workspace.resolve(".memory/llmwiki"));
+        Files.writeString(llmwiki.resolve("index.md"), "- [fact.md](fact.md) — 项目事实\n");
+        SessionState state = sessionState(true);
+        AnthropicClient client = testClient();
+        try (MemoryRuntime runtime = runtime(client, state)) {
+            SystemPromptManager manager = manager(runtime);
+            assertTrue(manager.refreshFrom(RefreshScope.APPLICATION, state).content().contains("fact.md"));
 
-            SystemPrompt prompt =
-                    manager.refreshFrom(
-                            RefreshScope.APPLICATION,
-                            sessionState
-                    );
-
-            assertTrue(
-                    prompt.content()
-                            .contains(
-                                    "<memory>"
-                            )
-            );
-            assertTrue(
-                    prompt.content()
-                            .contains(
-                                    "coding-style"
-                            )
-            );
-            assertTrue(
-                    prompt.content()
-                            .contains(
-                                    "项目编码风格"
-                            )
-            );
-            assertFalse(
-                    prompt.content()
-                            .contains(
-                                    "正文不应在索引注入时加载"
-                            )
-            );
+            // 1. MemoryRuntime 和 Provider 读取同一 SessionState，不维护第二份开关。
+            runtime.setEnabled(false);
+            assertFalse(manager.refreshFrom(RefreshScope.SESSION, state).content().contains("<memory>"));
+            runtime.setEnabled(true);
+            assertTrue(manager.refreshFrom(RefreshScope.SESSION, state).content().contains("fact.md"));
         } finally {
             client.close();
         }
     }
 
-    /**
-     * Given 已加载记忆，when 运行中切换开关，then System Prompt section 随之增删。
-     */
-    @Test
-    void togglesMemorySectionAtRuntime()
-            throws IOException {
-        AnthropicClient client =
-                testClient();
-        try {
-            SessionState sessionState =
-                    new SessionState(
-                            true,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-            WorkspacePathResolver paths =
-                    new WorkspacePathResolver(
-                            sessionState
-                    );
-            MemoryRepository repository =
-                    new MemoryRepository(
-                            paths
-                    );
-            repository.save(
-                    new MemoryEntry(
-                            "project-fact",
-                            MemoryType.PROJECT,
-                            "项目事实",
-                            "正文"
-                    )
-            );
-            MemoryRuntime runtime =
-                    new MemoryRuntime(
-                            sessionState,
-                            client,
-                            "test-model",
-                            paths
-                    );
-            SystemPromptManager manager =
-                    new SystemPromptManager(
-                            List.of(
-                                    new MemorySystemPromptProvider(
-                                            runtime
-                                    )
-                            )
-                    );
-            assertTrue(
-                    manager.refreshFrom(
-                                    RefreshScope.APPLICATION,
-                                    sessionState
-                            )
-                            .content()
-                            .contains(
-                                    "project-fact"
-                            )
-            );
-
-            sessionState.setMemoryEnabled(
-                    false
-            );
-            assertFalse(
-                    manager.refreshFrom(
-                                    RefreshScope.SESSION,
-                                    sessionState
-                            )
-                            .content()
-                            .contains(
-                                    "<memory>"
-                            )
-            );
-
-            sessionState.setMemoryEnabled(
-                    true
-            );
-            assertTrue(
-                    manager.refreshFrom(
-                                    RefreshScope.SESSION,
-                                    sessionState
-                            )
-                            .content()
-                            .contains(
-                                    "project-fact"
-                            )
-            );
-        } finally {
-            client.close();
-        }
+    /** 创建只包含 Memory Provider 的 Prompt Manager。 */
+    private static SystemPromptManager manager(MemoryRuntime runtime) {
+        return new SystemPromptManager(List.of(new MemorySystemPromptProvider(runtime)));
     }
 
-    /**
-     * Given 记忆关闭，when 调用记忆生命周期方法，then 不产生记忆结果。
-     */
-    @Test
-    void disablesAllMemoryRuntimeOperations()
-            throws IOException {
-        AnthropicClient client =
-                testClient();
-        try {
-            SessionState sessionState =
-                    new SessionState(
-                            false,
-                            ToolApprovalMode.BYPASS,
-                            workspace,
-                            workspace,
-                            List.of(workspace),
-                            null
-                    );
-            WorkspacePathResolver paths =
-                    new WorkspacePathResolver(
-                            sessionState
-                    );
-            MemoryRuntime runtime =
-                    new MemoryRuntime(
-                            sessionState,
-                            client,
-                            "test-model",
-                            paths
-                    );
-
-            assertEquals(
-                    "",
-                    runtime.recall(
-                            "query"
-                    )
-            );
-            runtime.enqueue(List.of(), List.of());
-            runtime.close();
-        } finally {
-            client.close();
-        }
+    /** 创建复用指定 SessionState 的真实 MemoryRuntime。 */
+    private MemoryRuntime runtime(AnthropicClient client, SessionState state) throws IOException {
+        return new MemoryRuntime(state, client, "test-model", new WorkspacePathResolver(state), bashExecutable());
     }
 
+    /** 创建当前临时工作区的 SessionState。 */
+    private SessionState sessionState(boolean enabled) {
+        return new SessionState(enabled, ToolApprovalMode.BYPASS,
+                workspace, workspace, List.of(workspace), null);
+    }
+
+    /** 返回测试宿主上已经存在的 Bash。 */
+    private static Path bashExecutable() {
+        return System.getProperty("os.name").toLowerCase().contains("win")
+                ? Path.of("C:/Windows/System32/bash.exe")
+                : Path.of("/bin/bash");
+    }
+
+    /** 创建不会在索引测试中发出网络请求的客户端。 */
     private static AnthropicClient testClient() {
         return AnthropicOkHttpClient.builder()
                 .apiKey("test-key")
