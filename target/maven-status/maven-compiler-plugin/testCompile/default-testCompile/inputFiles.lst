@@ -13,6 +13,7 @@ D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manu
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\recovery\ModelRequestRecoveryManagerTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\session\SessionStoreTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\SessionStateTest.java
+D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\systemprompt\IdentitySystemPromptProviderTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\systemprompt\MemorySystemPromptProviderTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\task\TaskSystemTest.java
 D:\learn_claudecode\demo\Quillith-miniHarness\src\test\java\dev\learn\agent\manual\tool\approval\DefaultToolApprovalPolicyTest.java

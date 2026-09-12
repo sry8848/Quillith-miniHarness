@@ -28,6 +28,7 @@ public final class IdentitySystemPromptProvider
         // 身份只描述通用职责，不重复任何具体工具能力。
         return new IdentitySystemPromptProvider(
                 "你是一个编程智能体。请使用当前可用的能力完成用户任务。"
+                        + "除非用户明确指定其他语言，否则使用简体中文回答。"
         );
     }
 

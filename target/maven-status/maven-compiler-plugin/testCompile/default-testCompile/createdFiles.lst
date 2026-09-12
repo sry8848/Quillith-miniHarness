@@ -1,6 +1,7 @@
 dev\learn\agent\manual\tool\approval\DefaultToolApprovalPolicyTest.class
 dev\learn\agent\manual\recovery\AgentLoopModelRequestRecoveryIntegrationTest.class
 dev\learn\agent\manual\systemprompt\MemorySystemPromptProviderTest.class
+dev\learn\agent\manual\systemprompt\IdentitySystemPromptProviderTest.class
 dev\learn\agent\manual\memory\MemoryBackgroundProcessorTest$ProviderResponse.class
 dev\learn\agent\manual\tool\ToolRegistryRetryTest$1.class
 dev\learn\agent\manual\recovery\ContentRejectionRecoveryHandlerTest.class

@@ -27,6 +27,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 验证后台记忆的恢复、周期触发和显式收尾批次。 */
 class MemoryBackgroundProcessorTest {
@@ -95,6 +96,9 @@ class MemoryBackgroundProcessorTest {
             scheduler.scheduledTasks().get(1).command().run();
             assertEquals(0, fixture.workStore().maintenanceState().unconsolidatedCount());
             assertEquals(1, fixture.requestBodies().size());
+
+            // 整理同样会重新生成记忆正文，因此必须复用中文输出约束。
+            assertTrue(fixture.requestBodies().getFirst().contains("简体中文"));
         }
     }
 
@@ -118,6 +122,27 @@ class MemoryBackgroundProcessorTest {
             assertEquals(0, processor.runPendingAndWait());
             assertEquals(3, fixture.requestBodies().size());
             assertEquals(0, fixture.workStore().pendingTaskCount());
+        }
+    }
+
+    /** 验证提取请求声明 JSON 协议，并要求记忆自然语言内容使用中文。 */
+    @Test
+    void extractionPromptDeclaresJsonOutputAndChineseContent() throws Exception {
+        try (ProcessorFixture fixture = new ProcessorFixture(
+                workspace,
+                List.of(extractionSuccess())
+        )) {
+            fixture.enqueue("task-1");
+
+            // 1. 执行一次真实 SDK 请求构造，并由本地 Provider 返回固定成功流。
+            assertEquals(0, fixture.processor().runPendingAndWait());
+
+            // 百炼会拒绝提示词中没有 JSON 关键词的 output_config 请求，
+            // 因此直接验证发送给 Provider 的最终请求体，而不是只检查本地常量。
+            assertTrue(fixture.requestBodies().getFirst().contains("JSON"));
+
+            // 自然语言字段需要显式约束，否则英文历史会让模型继续生成英文记忆。
+            assertTrue(fixture.requestBodies().getFirst().contains("简体中文"));
         }
     }
 

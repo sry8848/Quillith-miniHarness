@@ -67,6 +67,7 @@ public final class MemoryConsolidator {
 
             name 必须是简短的 kebab-case 标识符。
             type 必须是 user、feedback、project 或 reference。
+            description 和 body 必须使用简体中文；name 和 type 保持协议规定的英文值。
             description 必须是单行摘要。
             body 必须使用 Markdown 完整保留仍然有效的信息。
 
